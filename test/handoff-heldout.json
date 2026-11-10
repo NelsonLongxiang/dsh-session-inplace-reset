@@ -1,0 +1,10 @@
+[
+  {"id":"warehouse-hold","description":"等待验收不等于出库完成","messages":[["user","货物必须等质检签字后才可出库。"],["tool","质检报告尚未签字；仅完成拣货，出库单仍为草稿。"],["user","先整理待签字清单，保留这条阻塞。"]],"mustKeep":["等质检签字后才可出库","出库单仍为草稿","待签字清单"]},
+  {"id":"currency-scope","description":"报价单位影响后续决策","messages":[["user","这份报价统一用墨西哥比索MXN，不要混入美元成本。"],["assistant","已获得三家供应商报价，尚未核对运费。"],["user","先核对运费再比较利润。"]],"mustKeep":["统一用墨西哥比索MXN","尚未核对运费","先核对运费"]},
+  {"id":"explicit-new-decision","description":"用户明确替换早期方案","messages":[["user","先采用每周备份。"],["tool","每周备份方案尚未部署。"],["user","改成每天备份；不要部署旧的每周方案。先提交配置草案。"]],"mustKeep":["改成每天备份","先提交配置草案"]},
+  {"id":"real-api-vs-health","description":"健康探针不证明数据端点可用","messages":[["tool","/health 返回200；/items 返回500，未获得有效列表。"],["assistant","服务看起来已经可用。"],["user","验收以/items真实列表为准，修复500后再记录通过。"]],"mustKeep":["/items 返回500","修复500后再记录通过"]},
+  {"id":"receipt-unknown","description":"送达未知先核对事实","messages":[["tool","外部任务发送后连接中断，未收到送达回执；状态unknown。"],["user","先查询对方是否收到，避免重复执行；暂不再次发送。"],["assistant","下一步是只读核对对方回执。"]],"mustKeep":["状态unknown","暂不再次发送"]},
+  {"id":"new-dependency","description":"开发实现与安装权限分开","messages":[["user","可自主编写本地转换代码，但没有授权安装新的共享组件。"],["tool","当前环境已有标准库与现成转换入口可用。"],["user","请复用现有入口完成隔离验证。"]],"mustKeep":["没有授权安装新的共享组件","复用现有入口"]},
+  {"id":"retracted-conclusion","description":"新证据推翻故障归因","messages":[["assistant","此前推测固定定时器导致连接断开。"],["tool","对照实验未复现固定周期，原推测证据不足。"],["user","撤回固定周期的定案；下一步比较协议客户端和真实页面。"]],"mustKeep":["原推测证据不足","撤回固定周期的定案","比较协议客户端和真实页面"]},
+  {"id":"draft-vs-published","description":"本地提交不代表发布","messages":[["tool","草稿已提交到本地分支commit=def5678，未合并、未发布。"],["user","保持草稿状态，先完成评审；发布由我决定。"],["assistant","当前可继续做测试和评审材料准备。"]],"mustKeep":["未合并、未发布","发布由我决定"]}
+]

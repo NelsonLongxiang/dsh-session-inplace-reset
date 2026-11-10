@@ -1,0 +1,10 @@
+# dsh-session-inplace-reset bundle patch: 同 ID 原地重置(设计 docs/plans/dsh-plugin-inplace-reset-design.md)
+# 默认配置可在 profile 层 patch 覆盖(volatile 热改)
+- insert:
+    - id: session-reset-inplace
+      name: "@local/dsh-session-inplace-reset"
+      config:
+        requireConfirm: true
+        defaultK: 12
+        handoffHardCapKB: 512
+        handoffTargetKB: 64
