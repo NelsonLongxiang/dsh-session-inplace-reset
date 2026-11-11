@@ -4,7 +4,7 @@
 
 正式仓库：[NelsonLongxiang/dsh-session-inplace-reset](https://github.com/NelsonLongxiang/dsh-session-inplace-reset)。
 
-当前版本 **0.3.0**，已验证宿主为 **DSH 0.2.1-rc.2 / Cordis 4.0.5 / Node 24**。单会话释放使用有边界的宿主适配；不匹配的运行时形状会拒绝操作。
+当前版本 **0.4.0**，已验证宿主为 **DSH 0.2.1-rc.2 / Cordis 4.0.5 / Node 24**。单会话释放使用有边界的宿主适配；不匹配的运行时形状会拒绝操作。
 
 ## 使用
 
@@ -14,7 +14,28 @@
 - 备份按完整事件前缀独立读回核验，不以压缩大小或事件数相近判断完整性。
 - 原日志、缓存和 rewind 实体放入隔离区，失败先保留失败代际再恢复原件。
 - 只有同 ID、交接轮与持久化读回核验通过才显示完成。当前标签页随后刷新，清除旧历史和统计。
-- 当前没有手动撤销按钮；已实现的是失败自动回退。归档备份与隔离原件不会自动删除。
+- 已完成的重置不提供撤销按钮；执行失败会尝试自动回退，中断事务可显式恢复。归档备份与隔离原件不会自动删除。
+
+## 安装发行包
+
+发行入口均为 `dist/*.js`，可在普通 `node_modules` 中加载，不依赖 Node 对依赖包内 TypeScript 的类型擦除。仓库保留 TypeScript 源码及已生成的 JavaScript。
+
+```sh
+git clone https://github.com/NelsonLongxiang/dsh-session-inplace-reset.git
+cd dsh-session-inplace-reset
+npm pack --ignore-scripts
+dsh plugin --profile web add ./local-dsh-session-inplace-reset-0.4.0.tgz --save-exact
+```
+
+上述打包使用已提交产物。修改源码后按下方开发流程重新生成，再打包；不要只复制 `.ts` 文件作为发行入口。
+
+## 中断恢复
+
+侧栏底部的 **恢复重置** 打开所有待恢复事务，即使原会话因隔离暂时从列表消失也可进入。选择 **核对并恢复…**，核对完整会话 ID、操作 ID 和时间，输入八位短 ID，再点击 **恢复原日志**。仍在列表中的会话也可从原重置弹窗进入恢复。
+
+每个事务有独立的不可变清单和事件文件。恢复按磁盘实际位置查找并校验原件，不只依赖最后一条状态；原位已有的新内容先保留到新的代际目录，再回迁原件。途中再次失败可重新进入恢复，冲突或摘要异常会停止并保留数据。未完成或不可校验的事务会阻止新的重置。
+
+该入口用于0.4.0起的未终结事务，不撤销已验证完成的重置，也不会自动续跑旧版重启记录。验证覆盖进程终止与文件操作失败；未做断电级验证。
 
 ## 评估模型连接配置
 
@@ -40,17 +61,20 @@
 
 ## 开发与测试
 
-新增业务实现与客户端源码使用 TypeScript。浏览器源是 `src/client.ts`，`lib/client.js` 是由 Node 24 内置类型擦除生成的宿主入口。
+新增业务实现与客户端源码使用 TypeScript。浏览器源是 `src/client.ts`，先生成 `lib/client.js`，再由 `tools/build-package.ts` 将后端和客户端生成到 `dist/`；生成物不能单独修改。TypeScript 编译器仅为开发依赖，运行包不安装额外 DSH 或 React 副本。
 
 ```sh
-node --run build:client
+npm install
+node --run build
 node --run check:client
+node --run check:runtime
+node --run typecheck
 node --run test
 ```
 
-隔离测试使用模拟凭证存储和本地 HTTP 服务，不调用真实模型，不修改真实会话或凭证。开发依赖用于 `node --run typecheck`；运行与客户端生成不需要额外编译工具。
+隔离测试使用临时目录、模拟凭证存储和本地 HTTP 服务，不调用真实模型，不修改真实会话或凭证。包含强制终止子进程、隔离/恢复中途失败、失败代际保留、损坏账本保全及普通 `node_modules` 导入检查。
 
-集成检查前参考 `.env.example` 配置本机 `.env.local`。浏览器必须使用已经运行的 CDP，不另起浏览器；只操作本轮新建的 target，先记录 ID，再导航，最后关闭。
+集成检查前参考 `.env.example` 配置本机 `.env.local`。浏览器必须使用已经运行且已登录的 CDP，不另起浏览器、不自动登录或修改共享 cookies；只操作本轮新建的 target，先记录 ID，再导航，最后核对关闭。
 
 ```sh
 node test/browser-menu.mjs
@@ -61,6 +85,12 @@ node test/check-live-reset.mjs --inspect-only
 默认浏览器检查模拟重置与模型响应。设置页检查执行真实安全读取，凭证写入回执被模拟，不替换现有真实 Key。
 
 显式检查：
+
+```sh
+node test/check-install.ts --launcher /path/to/dsh/lib/bin.js --archive /path/to/local-dsh-session-inplace-reset-0.4.0.tgz
+```
+
+此检查复用已有 DSH 安装，在独立 `DSH_HOME` 中离线安装发行包、使用随机 loopback 端口启动隔离实例，验证原生凭证持久化和真实会话文件的中断恢复。只停止自己创建的隔离进程，不操作当前服务；凭证测试只使用虚构 Key。
 
 ```sh
 node test/browser-menu.mjs --model-preview

@@ -84,7 +84,7 @@ test('switching menu rows creates a fresh dialog and carries no previous confirm
 
 test('browser reload restores the verified result without overriding host navigation', () => {
   const id = 'session-33333333-3333-3333-3333-333333333333';
-  const completed = { phase: 'DONE', verified: true, sessionId: id, before: { totalTurns: 24 }, after: { totalTurns: 1 } };
+  const completed = { ok: true, sameId: true, phase: 'DONE', verified: true, sessionId: id, before: { totalTurns: 24 }, after: { totalTurns: 1 } };
   const runtime = clientRuntime({ sessionId: id, displayTitle: 'reset result', completed });
   assert.deepEqual(runtime.navigations, []);
   const dialog = runtime.entries.get('shell.overlay').component();
@@ -98,6 +98,28 @@ test('a saved result for a different ID cannot reopen a completion dialog', () =
   const id = 'session-55555555-5555-5555-5555-555555555555';
   const runtime = clientRuntime({ sessionId: id, completed: { phase: 'DONE', verified: true, sessionId: 'another-id', before: { totalTurns: 24 }, after: { totalTurns: 1 } } });
   assert.equal(runtime.entries.get('shell.overlay').component(), null);
+  assert.deepEqual(runtime.navigations, []);
+  runtime.dispose();
+});
+
+test('global recovery entry can target a missing session without selecting or creating a session', () => {
+  const runtime = clientRuntime();
+  const footer = runtime.entries.get('sidebar.footer.action');
+  footer.component({ wide: true }).props.onClick();
+  const index = runtime.entries.get('shell.overlay').component();
+  const missing = 'session-77777777-7777-7777-7777-777777777777';
+  index.props.onChoose(missing);
+  const dialog = runtime.entries.get('shell.overlay').component();
+  assert.equal(dialog.props.sessionId, missing);
+  assert.equal(dialog.props.recoveryOnly, true);
+  assert.deepEqual(runtime.navigations, []);
+  runtime.dispose();
+});
+
+test('verified recovery receipt is restored after refresh without forcing session navigation', () => {
+  const id = 'session-88888888-8888-8888-8888-888888888888';
+  const runtime = clientRuntime({ sessionId: id, completed: { ok: true, sameId: true, verified: true, phase: 'RECOVERED', sessionId: id, operationId: '11111111-1111-1111-1111-111111111111' } });
+  assert.equal(runtime.entries.get('shell.overlay').component().props.completed.phase, 'RECOVERED');
   assert.deepEqual(runtime.navigations, []);
   runtime.dispose();
 });

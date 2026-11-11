@@ -7,8 +7,11 @@
 - `lib/session-lifecycle.js` 针对已验证的 AgentLoop/Cordis 布局，定位唯一的 `agentLoop.scope(id)` 有序 disposer。依赖宿主 effect 元数据，未知形状、身份变化或运行中状态会拒绝修改存储。
 - 并发闸覆盖目标会话的输入、创建、准备与恢复入口，其他会话可继续工作。
 - `lib/backup.js` 将 fork 的持久化事件前缀与原事件逐项比较。备份大小、行数相近不能代替该核验。
-- 原件通过隔离保存。失败时先释放并保留失败代际，再还原原件，不能覆盖后来写入的新文件。
-- 新账本追加并fsync；交接文件绑定操作ID与SHA。只有新日志中实际存在完整交接文本且轮次符合约定，才返回 verified DONE。
+- `lib/reset-transaction.ts` 组织执行与显式恢复；`lib/reset.js` 只保留既有导入入口。
+- `lib/reset-journal.ts` 在 `session-reset/transactions/<operationId>/` 原子发布不可变清单，记录原路径、SHA-256、字节数和文件数。每步状态写入新的事件文件并fsync；隔离原件位于 `quarantine/<operationId>/original/`。
+- 恢复根据实际位置与摘要识别“重命名已完成、事件未写入”的中断窗口。原位出现的新实体先移至 `preserved/<generationId>/`，再恢复原件。回迁再次失败仍保留已完成步骤，下一次恢复跳过已校验回迁的实体，冲突时拒绝覆盖。
+- `lib/ledger.ts` 保留旧账本和损坏尾部，每次插件装载使用新的追加文件，逐条fsync。历史记录缺损会显示提示；事务清单与事件承担恢复判断。
+- 只有新日志中实际存在完整交接文本且轮次符合约定，才持久化 `committed` 并返回 verified DONE；随后历史账本追加失败只返回提示，不能反过来撤销已提交事务。
 
 ## 评估连接
 
@@ -30,14 +33,19 @@
 
 ## 接口与客户端
 
-宿主自动TYPERT loader按包名长期缓存基础接口清单。基础接口保留原拥有者，新增预览和配置端点通过公开 `typert.register()` 注册在本包已导出的 `/preview` 子模块贡献键下。作用域卸载时只移除自己的贡献，不修改全局缓存或抢占旧拥有者。
+`lib/remote-service.ts` 使用宿主自己的 `TypertRemoteService` 挂载插件拥有的 `sessionReset` 服务，不再给 `workspaceRegistry` 添加方法或依赖残留绑定。0.4.0接口为 `/api/sessionReset/<method>`，方法名保持 `sessionResetDryRun`、`sessionResetExecute`、`sessionResetResume`、`sessionResetModelPreview`、`sessionResetEvaluationSettings`、`sessionResetSaveEvaluationSettings`、`sessionResetRecoveryStatus`、`sessionResetRecoveries`。
 
-`src/client.ts` 是浏览器单一源码；`tools/build-client.ts` 生成宿主需要的 `lib/client.js`。设置卡注册到官方 `settings.models.footer`，不替换聊天模型设置。客户端确认区与模型预览彼此分离；只有用户输入目标短ID才可请求重置。
+宿主自动TYPERT loader按包名长期缓存基础接口清单。当前自动入口只发布空清单，本包已导出的 `/preview` 子模块贡献拥有上述接口。旧版缓存的 `workspaceRegistry` 贡献保持原拥有者，新命名空间与之并存；卸载仅移除自己的服务和贡献，不重载全局缓存。
+
+`src/client.ts` 是浏览器单一源码；`tools/build-client.ts` 生成 `lib/client.js`，`tools/build-package.ts` 将所有发行入口编译到 `dist/*.js` 并改写 `.ts` 相对导入。普通 `node_modules` 安装不再依赖 Node 类型擦除。
+
+设置卡注册到官方 `settings.models.footer`。重置入口仍在会话行菜单，恢复列表注册到 `sidebar.footer.action`，通过独立 overlay 选择事务。真实隔离演练已确认原会话行可能从目录消失，恢复不能依赖该行仍存在。输入目标短ID后才允许恢复，新代际始终先保留。
 
 ## 已验证与未覆盖
 
-- 隔离测试覆盖备份/回退、并发输入隔离、概率灰带、体积预算、原文保留、凭证隐私、连接更新、跨域Key绑定与HTTP请求。
+- 隔离测试覆盖备份/回退、并发输入隔离、卸载等待事务收口、进程被强制终止、隔离和恢复再次失败、原件摘要、损坏账本保全、概率灰带、体积预算、原文保留、凭证隐私、连接更新及跨域Key绑定。
+- `test/check-install.ts` 在独立 `DSH_HOME` 中离线安装真实发行包，通过现有 DSH 启动随机端口实例，验证服务绑定、原生凭证保存和跨启动读取，以及真实会话文件隔离后的 RPC 恢复。只关闭本轮创建的隔离进程。
 - 浏览器集成检查只操作自身target；普通检查拦截重置和凭证写入。真实演练需要显式参数与新建测试副本。
 - 单会话释放只在声明的宿主版本与布局验证过；升级后必须重跑live演练。
 - 尚无独立人工标注的真实长会话质量基准；不把同一模型对自身的标签当作校准真值。
-- 当前只提供失败自动回退，没有手动撤销按钮；其他已打开同一旧会话的标签页可能需要自行刷新。
+- 已完成事务不支持手动撤销；0.4.0未终结事务支持显式恢复，旧版重启记录不自动续跑。断电级持久性未验证；其他同会话标签页可能需要自行刷新。

@@ -4,9 +4,12 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
+    "allowJs": true,
+    "checkJs": false,
     "noEmit": true,
     "skipLibCheck": true,
     "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
     "types": ["node", "react"],
     "lib": ["ES2023", "DOM"]
   },

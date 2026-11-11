@@ -1,33 +1,17 @@
 // Uses its own target on the owner's CDP endpoint; destructive mode requires an explicitly labelled test session.
 import assert from 'node:assert/strict';
-import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { packageRoot, webUrl, cdpUrl } from './runtime.ts';
+import { webUrl, cdpUrl } from './runtime.ts';
+import { Ledger } from '../lib/ledger.ts';
+import { ResetJournal } from '../lib/reset-journal.ts';
 
 const cdp = cdpUrl;
 const base = webUrl.replace(/\/$/, '');
-const repo = packageRoot;
 const run = new Date().toISOString().replace(/[:.]/g, '-');
 const out = join(homedir(), '.expert-teams/data/dsh-session-inplace-reset/runs', `menu-${run}`);
 const delay = (ms) => new Promise((done) => setTimeout(done, ms));
-
-async function currentTokens() {
-  const candidates = [join(homedir(), '.dsh/logs/web-3080.log')];
-  for (const [root, pattern] of [[tmpdir(), /^dsh-(?:pocket|inplace)-restart-.*\.out\.log$/], [join(repo, 'tmp'), /^(?:d\d+|dsh-.*)\.out$/]]) {
-    for (const name of await readdir(root).catch((error) => { if (error.code === 'ENOENT') return []; throw error; })) if (pattern.test(name)) candidates.push(join(root, name));
-  }
-  const logs = (await Promise.all(candidates.map(async (path) => {
-    try { return { path, mtime: (await stat(path)).mtimeMs }; } catch { return null; }
-  }))).filter(Boolean).sort((a, b) => b.mtime - a.mtime);
-  const tokens = [];
-  for (const log of logs.slice(0, 12)) {
-    const contents = await readFile(log.path, 'utf8');
-    const matches = [...contents.matchAll(/token=([A-Za-z0-9_-]+)/g)];
-    if (matches.length) tokens.push(matches.at(-1)[1]);
-  }
-  return [...new Set(tokens)];
-}
 
 await mkdir(out, { recursive: true });
 const target = await (await fetch(`${cdp}/json/new?about:blank`, { method: 'PUT' })).json();
@@ -43,6 +27,8 @@ let rejectPreview = false;
 let simulatedExecute = null;
 let simulatedModel = null;
 const evaluationSettingsMode = process.argv.includes('--evaluation-settings');
+const recoveryMode = process.argv.includes('--recovery-list');
+const recoveryFixture = { operationId: crypto.randomUUID(), sessionId: `session-${crypto.randomUUID()}`, backupId: `session-${crypto.randomUUID()}`, phase: 'quarantined', createdAt: new Date().toISOString() };
 let savedEvaluationSettings = null;
 const settingsWrites = [];
 const executionOption = process.argv.indexOf('--execute-test-session');
@@ -71,7 +57,16 @@ socket.addEventListener('message', ({ data }) => {
     const { requestId, request } = message.params;
     const body = JSON.parse(request.postData);
     requests.push({ method: body.method, sessionId: body.payload.args.sessionId ?? body.payload.args.request?.sessionId });
-    if (body.method.endsWith('/sessionResetSaveEvaluationSettings')) {
+    if (recoveryMode && (body.method.endsWith('/sessionResetRecoveries') || body.method.endsWith('/sessionResetRecoveryStatus'))) {
+      const value = { ...(body.payload.args.sessionId ? { sessionId: body.payload.args.sessionId } : {}), operations: [recoveryFixture], issues: [], warnings: [] };
+      const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: true, value } });
+      void send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'content-type', value: 'application/json' }], body: Buffer.from(response).toString('base64') });
+    } else if (body.method.endsWith('/sessionResetResume')) {
+      const input = body.payload.args.request;
+      const allowed = recoveryMode && input.sessionId === recoveryFixture.sessionId && input.operationId === recoveryFixture.operationId && input.confirmShortId === recoveryFixture.sessionId.slice(8, 16);
+      const response = JSON.stringify({ rpcId: body.rpcId, result: allowed ? { ok: true, value: { ok: true, phase: 'RECOVERED', verified: true, sameId: true, sessionId: input.sessionId, operationId: input.operationId } } : { ok: false, error: { message: 'Browser test blocked a recovery write' } } });
+      void send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'content-type', value: 'application/json' }], body: Buffer.from(response).toString('base64') });
+    } else if (body.method.endsWith('/sessionResetSaveEvaluationSettings')) {
       const input = body.payload.args.request;
       settingsWrites.push({ apiBase: input.apiBase, suppliedKey: !!input.apiKey });
       const value = evaluationSettingsMode ? { apiBase: input.apiBase === 'https://eval.example.test' ? 'https://eval.example.test/v4/ai/evaluation-model' : input.apiBase, configured: true, hasSavedKey: true, usingDefault: false, writable: true } : null;
@@ -90,7 +85,7 @@ socket.addEventListener('message', ({ data }) => {
       simulatedExecute = null;
       const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: true, value } });
       void send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'content-type', value: 'application/json' }], body: Buffer.from(response).toString('base64') });
-    } else if (rejectPreview) {
+    } else if (rejectPreview && body.method.endsWith('/sessionResetDryRun')) {
       rejectPreview = false;
       const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: false, error: { message: '预览失败验证' } } });
       void send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'content-type', value: 'application/json' }], body: Buffer.from(response).toString('base64') });
@@ -152,21 +147,34 @@ try {
   await send('Runtime.enable');
   await send('Page.navigate', { url: browserUrl });
   await until(`document.readyState === 'complete'`, 'page ready');
-  if (await evaluate(`document.body.innerText.includes('authentication required')`)) {
-    let authenticated = false;
-    for (const token of await currentTokens()) {
-      const response = await evaluate(`(async () => { const r = await fetch('/?token=' + ${JSON.stringify(token)}); return r.ok && !(await r.text()).includes('authentication required'); })()`);
-      if (response) { authenticated = true; break; }
-    }
-    assert.ok(authenticated, 'No current DSH token found in existing logs');
-    await send('Page.navigate', { url: browserUrl });
-  }
+  assert.equal(await evaluate(`document.body.innerText.includes('authentication required')`), false, 'The specified shared CDP browser must already be authenticated; its login state was not changed');
   await until(`document.querySelectorAll('[data-row-key^="session:"]').length >= 2`, 'two session rows', 40_000);
   assert.equal(await evaluate(`document.body.innerText.includes('Failed to load plugins')`), false);
-  await send('Fetch.enable', { patterns: [{ urlPattern: '*workspaceRegistry/sessionResetEvaluationSettings', requestStage: 'Request' }, { urlPattern: '*workspaceRegistry/sessionResetSaveEvaluationSettings', requestStage: 'Request' }, { urlPattern: '*workspaceRegistry/sessionResetDryRun', requestStage: 'Request' }, { urlPattern: '*workspaceRegistry/sessionResetModelPreview', requestStage: 'Request' }, { urlPattern: '*workspaceRegistry/sessionResetExecute', requestStage: 'Request' }] });
+  await send('Fetch.enable', { patterns: [{ urlPattern: '*sessionReset/sessionResetEvaluationSettings', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetSaveEvaluationSettings', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetDryRun', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetModelPreview', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetExecute', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetRecoveries', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetRecoveryStatus', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetResume', requestStage: 'Request' }] });
   const testOption = executionOption;
   const restoreOption = process.argv.indexOf('--restore-operation');
-  if (evaluationSettingsMode) {
+  if (recoveryMode) {
+    const sessionId = recoveryFixture.sessionId;
+    assert.equal(await evaluate(`!!document.querySelector('[data-row-key="session:${sessionId}"]')`), false);
+    await until(`!!document.querySelector('[data-reset-recoveries-entry]')`, 'global recovery entry');
+    await evaluate(`document.querySelector('[data-reset-recoveries-entry]').click()`);
+    await until(`document.querySelector('[data-reset-recoveries-list]')?.textContent.includes(${JSON.stringify(sessionId)})`, 'missing session listed by transaction');
+    const screenshot = await send('Page.captureScreenshot', { format: 'png' });
+    await writeFile(join(out, 'recovery-list-simulated.png'), Buffer.from(screenshot.data, 'base64'));
+    await evaluate(`[...document.querySelectorAll('[data-reset-recoveries-list] button')].find(button => button.textContent === '核对并恢复…').click()`);
+    await until(`document.querySelector('[data-inplace-reset-session]')?.dataset.inplaceResetSession === ${JSON.stringify(sessionId)} && !!document.querySelector('[data-reset-recovery]')`, 'recovery-only confirmation dialog');
+    assert.equal(await evaluate(`document.getElementById('inplace-reset-confirm').value`), '');
+    assert.equal(await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(button => button.textContent === '恢复原日志').disabled`), true);
+    assert.equal(await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].some(button => button.textContent === '备份并重置')`), false);
+    assert.ok(!requests.some((request) => /sessionReset(?:Execute|Resume|ModelPreview)$/.test(request.method)));
+    await evaluate(`(() => { const input = document.getElementById('inplace-reset-confirm'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(sessionId.slice(8, 16))}); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    await until(`[...document.querySelectorAll('[role="dialog"] button')].some(button => button.textContent === '恢复原日志' && !button.disabled)`, 'explicit recovery confirmation');
+    await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(button => button.textContent === '恢复原日志').click()`);
+    await until(`document.querySelector('[data-inplace-reset-result]')?.dataset.inplaceResetResult === 'RECOVERED'`, 'verified simulated recovery restored after reload', 40000);
+    assert.equal(requests.filter((request) => request.method.endsWith('/sessionResetResume')).length, 1);
+    await writeFile(join(out, 'result.json'), JSON.stringify({ mode: 'simulated-recovery', sessionId, requests, checks: ['global entry independent of session row', 'missing session reaches confirmation', 'empty confirmation blocks recovery', 'no reset or model request', 'only explicit confirmed recovery sent', 'verified recovery receipt survives reload', 'all recovery writes simulated; real sessions unchanged'] }, null, 2));
+    console.log(`PASS global recovery UI; writes simulated; evidence: ${out}`);
+  } else if (evaluationSettingsMode) {
     await evaluate(`(() => { const button = [...document.querySelectorAll('button')].find(el => el.textContent.trim() === '更多' || el.getAttribute('aria-label') === '更多'); if (!button) throw new Error('More menu missing'); button.click(); })()`);
     await until(`[...document.querySelectorAll('[role="menuitem"]')].some(el => el.textContent.includes('设置'))`, 'settings menu entry');
     await evaluate(`[...document.querySelectorAll('[role="menuitem"]')].find(el => el.textContent.includes('设置')).click()`);
@@ -175,7 +183,7 @@ try {
     await until(`!!document.getElementById('evaluation-api-base') || !!document.querySelector('[data-evaluation-settings] [role="alert"]')`, 'evaluation model configuration');
     const failure = await evaluate(`document.querySelector('[data-evaluation-settings] [role="alert"]')?.textContent`);
     assert.equal(failure, undefined, failure);
-    const readFields = await evaluate(`(async () => { const rpcId = crypto.randomUUID(); const response = await fetch('/api/workspaceRegistry/sessionResetEvaluationSettings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'client-request', rpcId, method: 'workspaceRegistry/sessionResetEvaluationSettings', payload: { args: {} } }) }); const full = await response.json(); if (!full.result?.ok) throw new Error('Configuration read rejected'); return Object.keys(full.result.value).sort(); })()`);
+    const readFields = await evaluate(`(async () => { const rpcId = crypto.randomUUID(); const response = await fetch('/api/sessionReset/sessionResetEvaluationSettings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'client-request', rpcId, method: 'sessionReset/sessionResetEvaluationSettings', payload: { args: {} } }) }); const full = await response.json(); if (!full.result?.ok) throw new Error('Configuration read rejected'); return Object.keys(full.result.value).sort(); })()`);
     assert.deepEqual(readFields, ['apiBase', 'configured', 'hasSavedKey', 'usingDefault', 'writable'].sort());
     assert.equal(await evaluate(`document.getElementById('evaluation-api-key').type`), 'password');
     assert.equal(await evaluate(`document.getElementById('evaluation-api-key').value`), '');
@@ -198,7 +206,7 @@ try {
     await writeFile(join(out, 'result.json'), JSON.stringify({ checks: ['native Settings → Models navigation', 'live safe configuration read', 'key never returned or prefilled', 'masked key input', 'save and preserve-key UI flow', 'all credential writes simulated; real store unchanged'], requests, settingsWrites }, null, 2));
     console.log(`PASS evaluation model settings view; credential writes simulated; evidence: ${out}`);
   } else if (process.argv.includes('--model-api-probe')) {
-    const value = await evaluate(`(async () => { const rpcId = crypto.randomUUID(); const response = await fetch('/api/workspaceRegistry/sessionResetModelPreview', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'client-request', rpcId, method: 'workspaceRegistry/sessionResetModelPreview', payload: { args: { sessionId: 'invalid' } } }) }); return { status: response.status, body: await response.text() }; })()`);
+    const value = await evaluate(`(async () => { const rpcId = crypto.randomUUID(); const response = await fetch('/api/sessionReset/sessionResetModelPreview', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'client-request', rpcId, method: 'sessionReset/sessionResetModelPreview', payload: { args: { sessionId: 'invalid' } } }) }); return { status: response.status, body: await response.text() }; })()`);
     await writeFile(join(out, 'probe.json'), JSON.stringify(value, null, 2));
     console.log(JSON.stringify(value));
   } else if (process.argv.includes('--model-preview')) {
@@ -238,8 +246,10 @@ try {
     console.log(`PASS live model preview: ${status}; assessed ${report.coverage.assessed}/${report.coverage.total}; report ${reportId}; browser evidence: ${out}`);
   } else if (restoreOption !== -1) {
     const operationId = process.argv[restoreOption + 1];
-    const records = (await readFile(join(homedir(), '.dsh/session-reset/operations.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
-    const value = records.find((row) => row.operationId === operationId && row.state === 'DONE')?.result;
+    const home = join(homedir(), '.dsh');
+    const records = new Ledger(home).rows;
+    let value = records.find((row) => row.operationId === operationId && row.state === 'DONE')?.result;
+    if (!value) { const journal = ResetJournal.load(home, operationId); if (journal.phase() === 'committed') value = journal.events().at(-1)?.detail; }
     assert.ok(value?.verified && value.sessionId, 'Verified operation missing from local ledger');
     await evaluate(`window.sessionStorage.setItem('@local/dsh-session-inplace-reset/completed', ${JSON.stringify(JSON.stringify({ sessionId: value.sessionId, displayTitle: '[reset-test] restored completion', completed: value }))})`);
     await send('Page.reload');
@@ -360,4 +370,12 @@ try {
   socket.close();
   for (const promise of pending.values()) promise.reject(new Error('CDP session closed'));
   await fetch(`${cdp}/json/close/${target.id}`);
+  let closed = false;
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const tabs = await (await fetch(`${cdp}/json/list`)).json();
+    if (!tabs.some((tab) => tab.id === target.id)) { closed = true; break; }
+    await delay(100);
+  }
+  await writeFile(join(out, 'closure.json'), JSON.stringify({ id: target.id, closed }), { flag: 'wx' });
+  assert.equal(closed, true, 'Owned target did not disappear');
 }

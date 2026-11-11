@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-session-inplace-reset",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Same-ID session reset with verified backup, per-session lifecycle release, and TypeScript decision-model handoff preview.",
   "dsh": {
     "bundle": {
@@ -9,6 +9,7 @@
     "client": {
       "platform": "web",
       "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar",
         "@deepseek-ai/dsh-client-ui-workspace",
         "@deepseek-ai/dsh-client-ui-layout",
         "@deepseek-ai/dsh-client-ui-settings-models"
@@ -16,20 +17,25 @@
     }
   },
   "type": "module",
-  "main": "lib/index.js",
+  "main": "dist/index.js",
   "exports": {
-    ".": "./lib/index.js",
-    "./preview": "./lib/register-rpc.ts",
-    "./client": "./lib/client.js",
-    "./typert": "./lib/typert.js",
+    ".": "./dist/index.js",
+    "./preview": "./dist/register-rpc.js",
+    "./client": "./dist/client.js",
+    "./typert": "./dist/typert.js",
     "./package.json": "./package.json",
     "./cordis.patch.yml": "./cordis.patch.yml"
   },
+  "files": ["dist", "cordis.patch.yml", "README.md", "LICENSE", "docs/design.md"],
+  "engines": { "node": ">=24" },
   "scripts": {
+    "build": "node --run build:client && node --run build:runtime",
+    "build:runtime": "node tools/build-package.ts",
+    "check:runtime": "node tools/build-package.ts --check",
     "build:client": "node tools/build-client.ts",
     "check:client": "node tools/build-client.ts --check",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/client-menu.test.mjs test/decision-model.test.ts test/evaluation-settings.test.ts test/handoff-eval.test.ts test/register-rpc.test.ts test/reset.test.mjs test/session-lifecycle.test.mjs"
+    "test": "node --test test/client-menu.test.mjs test/decision-model.test.ts test/evaluation-settings.test.ts test/reset-journal.test.ts test/ledger.test.ts test/package.test.ts test/handoff-eval.test.ts test/register-rpc.test.ts test/reset.test.mjs test/session-lifecycle.test.mjs"
   },
   "repository": {
     "type": "git",
@@ -46,8 +52,5 @@
     "typescript": "5.9.3",
     "@types/node": "25.5.0",
     "@types/react": "19.2.14"
-  },
-  "dependencies": {
-    "@deepseek-ai/dsh-typert-protocol": "0.2.1-rc.2"
   }
 }

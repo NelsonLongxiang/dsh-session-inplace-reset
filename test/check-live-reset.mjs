@@ -4,6 +4,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { readFile, readdir, stat, mkdir, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Ledger } from '../lib/ledger.ts';
+import { ResetJournal } from '../lib/reset-journal.ts';
 import { packageRoot, testSourceSession } from './runtime.ts';
 
 const verifyIndex = process.argv.indexOf('--verify-existing');
@@ -32,7 +34,7 @@ for (const { path } of ordered.slice(0, 14)) {
     let response;
     try { response = await invoke(); }
     catch (error) {
-      if (!['session/list', 'workspaceRegistry/sessionResetDryRun'].includes(endpoint)) throw error;
+      if (!['session/list', 'sessionReset/sessionResetDryRun'].includes(endpoint)) throw error;
       response = await invoke(); // Only these read-only calls may be retried after a stale keep-alive socket.
     }
     assert.equal(response.status, 200, endpoint);
@@ -61,9 +63,12 @@ try {
     evidence.entries = selected.map(({ entryId, moduleName, enabled, fiberPhase, readOnlyReason }) => ({ entryId, moduleName, enabled, fiberPhase, readOnlyReason }));
     console.log(JSON.stringify(evidence.entries, null, 2));
   } else if (reloadOnly) {
-    const history = await readFile(join(homedir(), '.dsh/session-reset/operations.jsonl'), 'utf8').catch((error) => { if (error.code === 'ENOENT') return ''; throw error; });
-    const latest = new Map(history.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)).map((row) => [row.operationId, row]));
-    assert.ok([...latest.values()].every((row) => !['RUNNING', 'BACKED_UP'].includes(row.state)), 'A reset is unfinished; leave plugin mounted and inspect its ledger');
+    const home = join(homedir(), '.dsh');
+    const latest = new Map(new Ledger(home).rows.map((row) => [row.operationId, row]));
+    assert.ok([...latest.values()].every((row) => {
+      if (!['RUNNING', 'BACKED_UP'].includes(row.state)) return true;
+      try { return ['committed', 'recovered'].includes(ResetJournal.load(home, row.operationId).phase()); } catch { return false; }
+    }), 'A reset is unfinished; leave plugin mounted and inspect its transaction');
     const disabled = await call('pluginManager/setBundleEnabled', { name: '@local/dsh-session-inplace-reset', enabled: false });
     assert.equal(disabled.application, 'applied', JSON.stringify(disabled));
     const enabled = await call('pluginManager/setBundleEnabled', { name: '@local/dsh-session-inplace-reset', enabled: true });
@@ -100,7 +105,7 @@ try {
   evidence.sourceSessionId = source.sessionId;
   evidence.testSessionId = target.sessionId;
   await call('session/rename', { request: { sessionId: target.sessionId, title: '[reset-test] live lifecycle drill' } });
-  const dry = await call('workspaceRegistry/sessionResetDryRun', { sessionId: target.sessionId });
+  const dry = await call('sessionReset/sessionResetDryRun', { sessionId: target.sessionId });
   evidence.before = dry;
   assert.ok(Number.isInteger(dry.totalTurns), 'New host code was not activated');
   assert.equal(dry.canReset, true, dry.blockedReason);
@@ -112,7 +117,7 @@ try {
   const targetId = evidence.testSessionId;
   evidence.afterPid = pid();
   assert.equal(evidence.afterPid, beforePid);
-  const after = await call('workspaceRegistry/sessionResetDryRun', { sessionId: targetId });
+  const after = await call('sessionReset/sessionResetDryRun', { sessionId: targetId });
   evidence.after = after;
   assert.equal(after.totalTurns, 1);
   assert.ok(after.totalEvents < dry.totalEvents);

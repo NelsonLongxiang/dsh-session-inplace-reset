@@ -2,11 +2,18 @@ import type * as ReactTypes from 'react';
 import type { PreviewReport } from '../lib/handoff-eval.ts';
 import type { EvaluationSettingsView } from '../lib/evaluation-settings.ts';
 
-type Complete = { ok: true; phase: 'DONE'; verified: true; sameId: true; sessionId: string; before: { totalTurns: number; totalEvents: number }; after: { totalTurns: number; totalEvents: number }; forkId?: string; operationId?: string };
-type Result = Complete | { phase: 'NOT_RESET'; note: string; forkId?: string };
+import type { recoveryStatus, listRecoveryStatus } from '../lib/reset-journal.ts';
+
+type Complete = { ok: true; phase: 'DONE'; verified: true; sameId: true; sessionId: string; before: { totalTurns: number; totalEvents: number }; after: { totalTurns: number; totalEvents: number }; forkId?: string; operationId?: string; auditWarning?: string };
+type Recovered = { ok: true; phase: 'RECOVERED'; verified: true; sameId: true; sessionId: string; operationId: string; after?: { totalTurns: number; totalEvents: number }; auditWarning?: string };
+type RecoveryView = ReturnType<typeof recoveryStatus> & { warnings: string[] };
+type RecoveryIndexView = ReturnType<typeof listRecoveryStatus> & { warnings: string[] };
+type Success = Complete | Recovered;
+type Result = Success | { phase: 'NOT_RESET'; note: string; forkId?: string };
 type DryRun = { sessionId: string; totalTurns: number; totalEvents: number; messages: number; size: number; k: number; canReset?: boolean; blockedReason?: string };
 type ModelReport = PreviewReport & { reportId?: string };
-type DialogTarget = { sessionId: string; displayTitle?: string; completed?: Complete };
+type DialogTarget = { sessionId: string; displayTitle?: string; completed?: Success; recoveryOnly?: true };
+type OverlayTarget = DialogTarget | { kind: 'recoveries' };
 type DialogProps = DialogTarget & { onClose: () => void };
 type MenuProps = { sessionId: string; displayTitle?: string; useMenuOpenState: () => [boolean, (value: boolean) => void] };
 interface ClientContext { slots: { inject(name: string, mount: () => unknown): unknown; register(options: object, component: ReactTypes.ComponentType<any>): () => void }; effect(mount: () => unknown, label: string): unknown }
@@ -20,12 +27,15 @@ window.__ModuleLoader__.load({
     const { MenuItemButton, Modal, Button } = require('@deepseek-ai/dsh-client-ui-primitives') as Record<string, ReactTypes.ComponentType<any>>;
     const h = React.createElement;
     const completedKey = '@local/dsh-session-inplace-reset/completed';
+    const isSuccess = (value: any, id: string): value is Success => value?.ok === true && value.verified === true && value.sameId === true && value.sessionId === id && (value.phase === 'DONE' ? Number.isSafeInteger(value.before?.totalTurns) && Number.isSafeInteger(value.after?.totalTurns) : value.phase === 'RECOVERED' && typeof value.operationId === 'string');
+
+    const validRecovery = (value: RecoveryIndexView) => !!value && Array.isArray(value.operations) && Array.isArray(value.issues) && Array.isArray(value.warnings) && value.issues.every((item) => typeof item === 'string') && value.warnings.every((item) => typeof item === 'string') && value.operations.every((operation) => /^session-[a-f0-9-]{36}$/i.test(operation.sessionId) && /^[a-f0-9-]{36}$/i.test(operation.operationId) && typeof operation.createdAt === 'string');
 
     const errorMessage = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
     const checkLabels: Record<string, string> = { constraints: '目标与约束', state: '任务状态与纠正', faithful: '角色、来源与事实边界' };
 
     async function rpc<T = any>(method: string, args: object, signal?: AbortSignal): Promise<T> {
-      const endpoint = `workspaceRegistry/${method}`;
+      const endpoint = `sessionReset/${method}`;
       const rpcId = crypto.randomUUID();
       const response = await fetch(`/api/${endpoint}`, {
         method: 'POST',
@@ -40,7 +50,7 @@ window.__ModuleLoader__.load({
       return full.result.value;
     }
 
-    function ResetDialog({ sessionId, displayTitle, onClose, completed }: DialogProps) {
+    function ResetDialog({ sessionId, displayTitle, onClose, completed, recoveryOnly }: DialogProps) {
       const [dry, setDry] = React.useState<DryRun | null>(null);
       const [loading, setLoading] = React.useState(true);
       const [executing, setExecuting] = React.useState(false);
@@ -52,12 +62,17 @@ window.__ModuleLoader__.load({
       const [modelLoading, setModelLoading] = React.useState(false);
       const [modelError, setModelError] = React.useState<string | null>(null);
       const modelRequest = React.useRef<AbortController | null>(null);
+      const [recovery, setRecovery] = React.useState<RecoveryView | null>(null);
+      const [recoveryAttempt, setRecoveryAttempt] = React.useState(0);
+      const [recoveryError, setRecoveryError] = React.useState<string | null>(null);
+      const [recovering, setRecovering] = React.useState(false);
+      const recoveryReady = !!recovery && !recovery.operations.length && !recovery.issues.length;
       React.useEffect(() => () => modelRequest.current?.abort(), []);
       const shortId = sessionId.slice(8, 16);
-      const close = () => { if (!executing) onClose(); };
+      const close = () => { if (!executing && !recovering) onClose(); };
 
       React.useEffect(() => {
-        if (completed) { setLoading(false); return; }
+        if (completed || recoveryOnly) { setLoading(false); return; }
         const controller = new AbortController();
         setLoading(true);
         setDry(null);
@@ -73,10 +88,36 @@ window.__ModuleLoader__.load({
           if (!controller.signal.aborted) setLoading(false);
         });
         return () => controller.abort();
-      }, [sessionId, attempt]);
+      }, [sessionId, attempt, recoveryOnly, completed]);
+
+      React.useEffect(() => {
+        if (completed) return;
+        const controller = new AbortController();
+        setRecovery(null);
+        rpc<RecoveryView>('sessionResetRecoveryStatus', { sessionId }, controller.signal).then((value) => {
+          if (value?.sessionId !== sessionId || !validRecovery(value) || !value.operations.every((operation) => operation.sessionId === sessionId)) throw new Error('恢复状态不可校验，未允许新的重置');
+          if (!controller.signal.aborted) setRecovery(value);
+        }).catch((reason) => { if (!controller.signal.aborted) setRecoveryError(errorMessage(reason)); });
+        return () => controller.abort();
+      }, [sessionId, recoveryAttempt]);
+      const recover = async (operationId: string) => {
+        if (executing || recovering || modelLoading || confirmText.trim() !== shortId) return;
+        setRecovering(true);
+        setRecoveryError(null);
+        try {
+          const value = await rpc<Recovered>('sessionResetResume', { request: { sessionId, operationId, confirmShortId: confirmText.trim() } });
+          if (!isSuccess(value, sessionId) || value.phase !== 'RECOVERED') throw new Error('未收到原日志恢复校验');
+          setResult(value);
+          try {
+            window.sessionStorage.setItem(completedKey, JSON.stringify({ sessionId, displayTitle, completed: value }));
+            window.location.reload();
+          } catch { setRecoveryError('原日志已校验恢复，请刷新当前标签页以读取原历史。'); }
+        } catch (reason) { setRecoveryError(errorMessage(reason)); setAttempt((value) => value + 1); }
+        finally { setRecovering(false); setRecoveryAttempt((value) => value + 1); }
+      };
 
       const previewModel = async () => {
-        if (!dry || executing || modelLoading) return;
+        if (!dry || executing || recovering || modelLoading) return;
         const controller = new AbortController();
         modelRequest.current = controller;
         setModelLoading(true);
@@ -96,26 +137,27 @@ window.__ModuleLoader__.load({
       };
 
       const execute = async () => {
-        if (!dry || dry.canReset === false || loading || executing || modelLoading || confirmText.trim() !== shortId) return;
+        if (!dry || dry.canReset === false || !recoveryReady || loading || executing || modelLoading || recovering || confirmText.trim() !== shortId) return;
         setExecuting(true);
         setError(null);
         try {
           const value = await rpc('sessionResetExecute', {
             request: { sessionId, confirmShortId: confirmText.trim() },
           });
-          if (value?.phase !== 'DONE' || value.ok !== true || value.verified !== true || value.sameId !== true || value.sessionId !== sessionId || !Number.isSafeInteger(value.after?.totalTurns) || !Number.isSafeInteger(value.before?.totalTurns)) {
+          if (!isSuccess(value, sessionId) || value.phase !== 'DONE') {
             setResult({ phase: 'NOT_RESET', note: value?.reason ?? value?.note ?? '未收到重置成功的读回校验，不能判定完成', forkId: value?.forkId });
             return;
           }
           setResult(value);
           setDry(null);
           try {
-            const { ok, phase, verified, sameId, sessionId: id, before, after, forkId, operationId } = value;
-            window.sessionStorage.setItem(completedKey, JSON.stringify({ sessionId: id, displayTitle, completed: { ok, phase, verified, sameId, sessionId: id, before, after, forkId, operationId } }));
+            const { ok, phase, verified, sameId, sessionId: id, before, after, forkId, operationId, auditWarning } = value;
+            window.sessionStorage.setItem(completedKey, JSON.stringify({ sessionId: id, displayTitle, completed: { ok, phase, verified, sameId, sessionId: id, before, after, forkId, operationId, auditWarning } }));
             window.location.reload();
           } catch { setError('后端重置已校验完成，请刷新当前标签页以清除旧统计。'); }
         } catch (reason) {
           setResult({ phase: 'NOT_RESET', note: errorMessage(reason) });
+          setRecoveryAttempt((value) => value + 1);
         } finally {
           setExecuting(false);
         }
@@ -123,24 +165,24 @@ window.__ModuleLoader__.load({
 
       return h(Modal, {
         open: true,
-        title: '原地重置会话',
+        title: recoveryOnly || completed?.phase === 'RECOVERED' ? '恢复原日志' : '原地重置会话',
         onClose: close,
         closeLabel: '关闭',
         footer: h(React.Fragment, null,
-          h(Button, { variant: 'outline', disabled: executing, onClick: close }, '关闭'),
-          !result && h(Button, {
+          h(Button, { variant: 'outline', disabled: executing || recovering, onClick: close }, '关闭'),
+          !result && !recoveryOnly && h(Button, {
             variant: 'primary',
-            disabled: !dry || dry.canReset === false || loading || executing || modelLoading || confirmText.trim() !== shortId,
+            disabled: !dry || dry.canReset === false || !recoveryReady || loading || executing || modelLoading || recovering || confirmText.trim() !== shortId,
             onClick: execute,
           }, executing ? '正在备份…' : '备份并重置'),
         ),
       },
-        h('div', { 'data-inplace-reset-session': sessionId, 'aria-busy': loading || executing || modelLoading, style: { maxHeight: '65vh', overflowY: 'auto', paddingRight: 4 } },
+        h('div', { 'data-inplace-reset-session': sessionId, 'aria-busy': loading || executing || recovering || modelLoading, style: { maxHeight: '65vh', overflowY: 'auto', paddingRight: 4 } },
           h('p', { style: { marginTop: 0, overflowWrap: 'anywhere' } }, displayTitle || '未命名会话'),
           h('code', { style: { fontSize: 12, overflowWrap: 'anywhere' } }, sessionId),
           loading && h('p', { role: 'status' }, '正在读取该会话的预览…'),
           error && h('p', { role: 'alert' }, error),
-          !result && !loading && !dry && h(Button, { variant: 'outline', onClick: () => setAttempt((n) => n + 1) }, '重新读取预览'),
+          !result && !recoveryOnly && !loading && !dry && h(Button, { variant: 'outline', onClick: () => setAttempt((n) => n + 1) }, '重新读取预览'),
           dry && h('div', { 'data-inplace-reset-stats': true, style: { margin: '16px 0' } },
             h('div', null, `原日志轮次：${Number.isSafeInteger(dry.totalTurns) ? dry.totalTurns.toLocaleString() : '未提供'}`),
             h('div', null, `事件数：${dry.totalEvents.toLocaleString()}`),
@@ -149,8 +191,19 @@ window.__ModuleLoader__.load({
             h('div', null, `交接包最多采样 ${dry.k} 轮；新日志收敛为 1 轮交接记录`),
             dry.canReset === false && h('p', { role: 'alert' }, `当前不可重置：${dry.blockedReason}`),
           ),
+          recoveryError && h('p', { role: 'alert', 'data-reset-recovery-error': true }, recoveryError),
+          recovery && (recovery.operations.length > 0 || recovery.issues.length > 0 || recovery.warnings.length > 0) && h('section', { 'data-reset-recovery': true },
+            h('b', null, recovery.operations.length || recovery.issues.length ? '存在未完成的重置' : '历史记录提示'),
+            recovery.operations.length > 0 && h('p', null, '恢复前会校验原件，并先保留原位可能已有的新内容。请输入下方短ID后明确选择恢复。'),
+            recovery.warnings.slice(0, 5).map((warning, index) => h('p', { key: `warning-${index}`, role: 'status' }, warning)),
+            recovery.issues.map((issue, index) => h('p', { key: index, role: 'alert' }, issue)),
+            recovery.operations.map((operation) => h('div', { key: operation.operationId },
+              h('p', null, `操作 ${operation.operationId} · ${operation.createdAt}`),
+              h(Button, { variant: 'outline', disabled: executing || recovering || modelLoading || recovery.operations.length !== 1 || confirmText.trim() !== shortId, onClick: () => recover(operation.operationId) }, recovering ? '正在恢复…' : '恢复原日志'),
+            )),
+          ),
           !result && dry && h('div', { 'data-inplace-reset-model': true, style: { margin: '16px 0' } },
-            h(Button, { variant: 'outline', disabled: loading || executing || modelLoading, onClick: previewModel }, modelLoading ? '正在筛选并核对…' : '模型筛选预览'),
+            h(Button, { variant: 'outline', disabled: loading || executing || recovering || modelLoading, onClick: previewModel }, modelLoading ? '正在筛选并核对…' : '模型筛选预览'),
             h('p', { style: { fontSize: 12 } }, '向现有决策模型发送文字片段，只生成预览。下方重置操作仍使用上方近期采样。'),
             modelError && h('p', { role: 'alert' }, modelError),
             model && h('div', { 'data-inplace-reset-model-status': model.status, 'data-inplace-reset-model-report': model.reportId, role: 'status' },
@@ -169,23 +222,55 @@ window.__ModuleLoader__.load({
               ),
             ),
           ),
-          !result && h(React.Fragment, null,
-            h('p', null, '先验证完整历史备份，再释放并重建该会话。只刷新目标会话的历史，不重启 DSH。任务运行中或无法确认释放入口时会拒绝操作。'),
-            h('label', { htmlFor: 'inplace-reset-confirm' }, `输入 ${shortId} 确认重置`),
+          (!result || !!recovery?.operations.length) && h(React.Fragment, null,
+            h('p', null, recoveryOnly ? '恢复会先保留原位的新内容，再按摘要校验原日志。' : '重置前会验证完整历史备份。正在运行或无法安全释放的会话会拒绝操作。'),
+            h('label', { htmlFor: 'inplace-reset-confirm' }, `输入 ${shortId} 确认所选会话`),
             h('input', {
               id: 'inplace-reset-confirm',
               value: confirmText,
               onChange: (event: ReactTypes.ChangeEvent<HTMLInputElement>) => setConfirmText(event.target.value),
               autoComplete: 'off',
-              disabled: loading || executing || modelLoading,
+              disabled: loading || executing || modelLoading || recovering,
               style: { display: 'block', width: '100%', boxSizing: 'border-box', marginTop: 6, padding: 8, color: 'inherit', background: 'var(--dsw-alias-bg-base)', border: '1px solid var(--dsw-alias-border-l3)', borderRadius: 6 },
             }),
           ),
-          result && h('div', { role: result.phase === 'DONE' ? 'status' : 'alert', 'data-inplace-reset-result': result.phase },
-            h('b', null, result.phase === 'DONE' ? '重置已完成并校验' : '未重置'),
+          result && h('div', { role: result.phase === 'NOT_RESET' ? 'alert' : 'status', 'data-inplace-reset-result': result.phase },
+            h('b', null, result.phase === 'DONE' ? '重置已完成并校验' : result.phase === 'RECOVERED' ? '原日志已恢复并校验' : '未重置'),
             result.phase === 'DONE' && h('p', { 'data-inplace-reset-after': true }, `原日志轮次：${result.before.totalTurns} → ${result.after.totalTurns}；事件数：${result.before.totalEvents} → ${result.after.totalEvents}`),
-            result.phase !== 'DONE' && h('p', null, result.note),
-            result.forkId && h('p', { style: { overflowWrap: 'anywhere' } }, `历史备份：${result.forkId}`),
+            result.phase === 'NOT_RESET' && h('p', null, result.note),
+            result.phase !== 'NOT_RESET' && result.auditWarning && h('p', { role: 'alert' }, result.auditWarning),
+            result.phase === 'DONE' && result.forkId && h('p', { style: { overflowWrap: 'anywhere' } }, `历史备份：${result.forkId}`),
+          ),
+        ),
+      );
+    }
+
+    function RecoveryList({ onChoose, onClose }: { onChoose: (id: string) => void; onClose: () => void }) {
+      const [view, setView] = React.useState<RecoveryIndexView | null>(null);
+      const [error, setError] = React.useState<string | null>(null);
+      const [attempt, setAttempt] = React.useState(0);
+      React.useEffect(() => {
+        const controller = new AbortController();
+        setError(null);
+        setView(null);
+        rpc<RecoveryIndexView>('sessionResetRecoveries', {}, controller.signal).then((value) => {
+          if (!validRecovery(value)) throw new Error('恢复列表不可校验');
+          if (!controller.signal.aborted) setView(value);
+        }).catch((reason) => { if (!controller.signal.aborted) setError(errorMessage(reason)); });
+        return () => controller.abort();
+      }, [attempt]);
+      return h(Modal, { open: true, title: '恢复中断重置', onClose, closeLabel: '关闭', footer: h(Button, { variant: 'outline', onClick: () => setAttempt((value) => value + 1) }, '刷新列表') },
+        h('div', { 'data-reset-recoveries-list': true },
+          !view && !error && h('p', { role: 'status' }, '正在读取恢复记录…'),
+          error && h('p', { role: 'alert' }, error),
+          view && h(React.Fragment, null,
+            !view.operations.length && !view.issues.length && h('p', null, '没有待恢复的重置。'),
+            view.issues.map((issue, index) => h('p', { key: index, role: 'alert' }, issue)),
+            view.warnings.slice(0, 5).map((warning, index) => h('p', { key: `warning-${index}` }, warning)),
+            view.operations.map((operation) => h('div', { key: operation.operationId, style: { marginTop: 12 } },
+              h('p', { style: { overflowWrap: 'anywhere' } }, `${operation.sessionId} · ${operation.createdAt}`),
+              h(Button, { variant: 'outline', onClick: () => onChoose(operation.sessionId) }, '核对并恢复…'),
+            )),
           ),
         ),
       );
@@ -252,13 +337,13 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots'],
       apply(ctx: ClientContext) {
-        let target: DialogTarget | null = null;
+        let target: OverlayTarget | null = null;
         try {
           const saved = JSON.parse(window.sessionStorage.getItem(completedKey) ?? 'null');
-          if (saved?.completed?.verified === true && saved.completed.phase === 'DONE' && saved.completed.sessionId === saved.sessionId && Number.isSafeInteger(saved.completed.after?.totalTurns) && Number.isSafeInteger(saved.completed.before?.totalTurns)) target = saved;
+          if (saved?.completed && isSuccess(saved.completed, saved.sessionId)) target = saved;
         } catch { /* An unavailable browser store must not block plugin activation. */ }
         const listeners = new Set<() => void>();
-        const publish = (next: DialogTarget | null) => {
+        const publish = (next: OverlayTarget | null) => {
           try { window.sessionStorage.removeItem(completedKey); } catch {}
           target = next;
           for (const listener of listeners) listener();
@@ -282,7 +367,9 @@ window.__ModuleLoader__.load({
 
         function ResetOverlay() {
           const request = React.useSyncExternalStore(subscribe, snapshot, snapshot);
-          return request && h(ResetDialog, { ...request, key: request.sessionId, onClose: () => publish(null) });
+          if (!request) return null;
+          if ('kind' in request) return h(RecoveryList, { onChoose: (id) => publish({ sessionId: id, displayTitle: `中断重置 · ${id.slice(8, 16)}`, recoveryOnly: true }), onClose: () => publish(null) });
+          return h(ResetDialog, { ...request, key: request.recoveryOnly ? `${request.sessionId}/recovery` : request.sessionId, onClose: () => publish(null) });
         }
 
         ctx.effect(() => ctx.slots.inject('sidebar.workspaces.session.menu.item', () => ctx.slots.register({
@@ -294,6 +381,9 @@ window.__ModuleLoader__.load({
           name: 'shell.overlay',
           id: '@local/dsh-session-inplace-reset/dialog',
         }, ResetOverlay)), 'session-reset-inplace: reset dialog');
+        ctx.effect(() => ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
+          name: 'sidebar.footer.action', id: '@local/dsh-session-inplace-reset/recoveries', order: 100,
+        }, ({ wide }: { wide: boolean }) => h(Button, { type: 'button', variant: 'ghost', title: '恢复中断重置', 'aria-label': '恢复中断重置', 'data-reset-recoveries-entry': true, onClick: () => publish({ kind: 'recoveries' }) }, wide ? '恢复重置' : '↶'))), 'session-reset: global recovery entry');
         ctx.effect(() => ctx.slots.inject('settings.models.footer', () => ctx.slots.register({
           name: 'settings.models.footer',
           id: '@local/dsh-session-inplace-reset/evaluation-settings',

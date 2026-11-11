@@ -4,14 +4,16 @@ import test from 'node:test';
 import { registerSessionRpc } from '../lib/register-rpc.ts';
 
 type Manifest = Parameters<typeof registerSessionRpc>[1];
-const artifact = (): Manifest => ({ package: '@local/dsh-session-inplace-reset', face: 'host', invocations: [{ id: 'dry', namespace: 'workspaceRegistry', method: 'sessionResetDryRun', result: { schema: 'existing-codec' } }] });
-function fixture() {
-  const owners = new Map<string, Manifest>([[artifact().package, artifact()]]);
+const artifact = (): Manifest => ({ package: '@local/dsh-session-inplace-reset', face: 'host', invocations: ['sessionResetDryRun', 'sessionResetExecute', 'sessionResetResume'].map((method) => ({ id: method, service: 'sessionReset', namespace: 'sessionReset', method, result: { schema: 'existing-codec' } })) });
+function fixture(legacy = true) {
+  const base = { ...artifact(), invocations: legacy ? artifact().invocations.map((item) => ({ ...item, service: 'workspaceRegistry', namespace: 'workspaceRegistry' })) : [] };
+  const owners = new Map<string, Manifest>([[artifact().package, base]]);
   const cleanups: (() => unknown)[] = [];
   const ctx = {
     get: (_name: 'typert') => ({
       register: (manifest: Manifest) => {
         assert.equal(owners.has(manifest.package), false, 'must not overwrite any live owner');
+        for (const existing of owners.values()) for (const old of existing.invocations) assert.ok(!manifest.invocations.some((item) => item.namespace === old.namespace && item.method === old.method), 'must not collide with an existing endpoint');
         owners.set(manifest.package, manifest);
         return () => { owners.delete(manifest.package); };
       },
@@ -24,13 +26,19 @@ function fixture() {
 test('preview contribution uses a real exported module key and removes only its own scope', async () => {
   const runtime = fixture();
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-  assert.equal(manifest.exports['./preview'], './lib/register-rpc.ts');
+  assert.equal(manifest.exports['./preview'], './dist/register-rpc.js');
   await registerSessionRpc(runtime.ctx, artifact());
   const preview = runtime.owners.get(`${artifact().package}/preview`)!;
-  assert.deepEqual(preview.invocations.map((item) => item.method), ['sessionResetModelPreview', 'sessionResetEvaluationSettings', 'sessionResetSaveEvaluationSettings']);
+  assert.deepEqual(preview.invocations.map((item) => item.method), ['sessionResetDryRun', 'sessionResetExecute', 'sessionResetResume', 'sessionResetModelPreview', 'sessionResetEvaluationSettings', 'sessionResetSaveEvaluationSettings', 'sessionResetRecoveryStatus', 'sessionResetRecoveries']);
   runtime.dispose();
   assert.equal(runtime.owners.has(artifact().package), true);
   assert.equal(runtime.owners.has(preview.package), false);
+});
+
+test('cold automatic-loader metadata coexists with all owned RPC endpoints', async () => {
+  const runtime = fixture(false);
+  await registerSessionRpc(runtime.ctx, artifact());
+  assert.equal(runtime.owners.get(`${artifact().package}/preview`)!.invocations.length, 8);
 });
 
 test('cached base endpoints remain owned by the host while preview activates', async () => {

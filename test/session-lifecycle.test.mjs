@@ -48,6 +48,25 @@ test('running or unknown lifecycle refuses before entering destructive work', as
   f.lifecycle.dispose();
 });
 
+test('plugin disposal drains the active transaction before removing its write fence', async () => {
+  const f = fixture();
+  const entered = Promise.withResolvers();
+  const finish = Promise.withResolvers();
+  const operation = f.lifecycle.run('target', async () => { entered.resolve(); await finish.promise; });
+  await entered.promise;
+  let disposed = false;
+  const disposal = f.lifecycle.dispose().then(() => { disposed = true; });
+  await Promise.resolve();
+  assert.equal(disposed, false);
+  assert.throws(() => f.controller.prompt({ sessionId: 'target' }), /正在重置/);
+  await assert.rejects(f.lifecycle.run('other', async () => {}), /卸载/);
+  finish.resolve();
+  await operation;
+  await disposal;
+  assert.equal(disposed, true);
+  f.controller.prompt({ sessionId: 'target' });
+});
+
 test('same-session concurrent writes are fenced while another session remains usable', async () => {
   const f = fixture();
   const entered = Promise.withResolvers();

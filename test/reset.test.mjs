@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { executeReset } from '../lib/reset.js';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+import { executeReset, executeRecovery } from '../lib/reset.js';
+import { recoveryStatus, ResetJournal } from '../lib/reset-journal.ts';
 
 function fixture({ failCreate = false, activity = [] } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'dsh-reset-isolated-'));
@@ -70,7 +73,7 @@ function fixture({ failCreate = false, activity = [] } = {}) {
   const rows = [];
   const ledger = { append(record) { const row = { at: rows.length + 1, ...record }; rows.push(row); return row; } };
   const run = () => executeReset(ctx, ledger, lifecycle, home, { sessionId: id, confirmShortId: id.slice(8, 16) }, { defaultK: 12, handoffHardCapKB: 512, buildHandoff: () => ({ k: 12, recent_messages: [{ role: 'user', text: 'task history' }] }) });
-  return { home, file, id, run, bytes, rows, forkCalls: () => forkCalls };
+  return { home, file, id, run, bytes, rows, ctx, ledger, lifecycle, forkCalls: () => forkCalls };
 }
 
 test('reset completes only after a new one-turn handoff is durably read back', async () => {
@@ -81,8 +84,8 @@ test('reset completes only after a new one-turn handoff is durably read back', a
   assert.equal(value.before.totalTurns, 2);
   assert.equal(value.after.totalTurns, 1);
   assert.equal(JSON.parse(readFileSync(f.file(f.id), 'utf8')).events.find((event) => event.type === 'session/title').data.title, 'original title');
-  assert.ok(existsSync(join(value.quarantine, 'sessions', 'bucket', f.id, 'session.json')));
-  assert.deepEqual(readFileSync(join(value.quarantine, 'sessions', 'bucket', f.id, 'session.json')), f.bytes);
+  assert.ok(existsSync(join(value.quarantine, 'original', 'sessions', 'bucket', f.id, 'session.json')));
+  assert.deepEqual(readFileSync(join(value.quarantine, 'original', 'sessions', 'bucket', f.id, 'session.json')), f.bytes);
   assert.equal(f.rows.at(-1).state, 'DONE');
 });
 
@@ -92,6 +95,42 @@ test('creation failure preserves the failed generation and restores exact origin
   assert.deepEqual(readFileSync(f.file(f.id)), f.bytes);
   assert.equal(f.rows.at(-1).state, 'ROLLED_BACK');
   assert.equal(f.rows.some((row) => row.state === 'DONE'), false);
+});
+
+test('a verified committed reset is not rolled back when the optional history append fails', async () => {
+  const f = fixture();
+  const append = f.ledger.append;
+  f.ledger.append = (row) => { if (row.state === 'DONE') throw new Error('injected history failure'); return append(row); };
+  const value = await f.run();
+  assert.equal(value.phase, 'DONE');
+  assert.ok(value.auditWarning);
+  assert.equal(ResetJournal.load(f.home, value.operationId).phase(), 'committed');
+  assert.equal(JSON.parse(readFileSync(f.file(f.id), 'utf8')).events.filter((event) => event.type === 'turn/start').length, 1);
+});
+
+test('failed automatic recovery is HALTED, blocks another reset, and can be explicitly resumed', async (t) => {
+  const f = fixture({ failCreate: true });
+  const rename = fs.renameSync;
+  let rejectRestore = true;
+  const patched = t.mock.method(fs, 'renameSync', (from, to) => {
+    if (rejectRestore && String(from).includes('original') && String(from).endsWith(f.id)) throw new Error('injected restore denial');
+    return rename(from, to);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { patched.mock.restore(); syncBuiltinESMExports(); });
+  await assert.rejects(f.run(), /请恢复原日志/);
+  assert.equal(f.rows.at(-1).state, 'HALTED');
+  const pending = recoveryStatus(f.home, f.id);
+  assert.equal(pending.operations.length, 1);
+  const count = f.forkCalls();
+  await assert.rejects(f.run(), /未完成/);
+  assert.equal(f.forkCalls(), count);
+  rejectRestore = false;
+  const value = await executeRecovery(f.ctx, f.ledger, f.lifecycle, f.home, { sessionId: f.id, operationId: pending.operations[0].operationId, confirmShortId: f.id.slice(8, 16) });
+  assert.equal(value.phase, 'RECOVERED');
+  assert.equal(value.verified, true);
+  assert.deepEqual(readFileSync(f.file(f.id)), f.bytes);
+  assert.equal(recoveryStatus(f.home, f.id).operations.length, 0);
 });
 
 test('background activity refuses before creating any backup or changing source data', async () => {

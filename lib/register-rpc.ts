@@ -3,12 +3,12 @@ interface Manifest { package: string; face: string; invocations: Invocation[]; [
 interface Registry { register(manifest: Manifest): () => unknown }
 interface Context { get(name: 'typert'): Registry; effect(mount: () => () => unknown, label: string): unknown }
 
-/** The exported /preview module owns only its new endpoint; cached base contributions remain untouched. */
+/** Own all current endpoints through a separate contribution; cached older namespaces remain untouched. */
 export async function registerSessionRpc(ctx: Context, artifact: Manifest): Promise<void> {
   const dry = artifact.invocations.find((item) => item.method === 'sessionResetDryRun');
-  if (!dry) throw new Error('缺少已核验的会话参数 codec，未注册新接口');
+  if (!dry || dry.namespace !== 'sessionReset' || dry.service !== 'sessionReset') throw new Error('缺少已核验的会话参数 codec，未注册新接口');
   const packageKey = `${artifact.package}/preview`;
-  const preview = { ...dry, id: `${packageKey}#workspaceRegistry/sessionResetModelPreview`, method: 'sessionResetModelPreview', result: { ...dry.result, typeSymbol: `${packageKey}/types#ModelPreviewValue` } };
+  const preview = { ...dry, id: `${packageKey}#sessionReset/sessionResetModelPreview`, method: 'sessionResetModelPreview', result: { ...dry.result, typeSymbol: `${packageKey}/types#ModelPreviewValue` } };
   const saveCodec = {
     mode: 'strict', typeSymbol: `${packageKey}/types#EvaluationSettingsWrite`,
     create: () => saveCodec.schema,
@@ -20,8 +20,11 @@ export async function registerSessionRpc(ctx: Context, artifact: Manifest): Prom
     } },
   };
   const settingsResult = { ...dry.result, typeSymbol: `${packageKey}/types#EvaluationSettingsView` };
-  const read = { ...dry, id: `${packageKey}#workspaceRegistry/sessionResetEvaluationSettings`, method: 'sessionResetEvaluationSettings', parameters: [], result: settingsResult };
-  const save = { ...dry, id: `${packageKey}#workspaceRegistry/sessionResetSaveEvaluationSettings`, method: 'sessionResetSaveEvaluationSettings', parameters: [{ name: 'request', wire: 'request', source: 'json', codec: saveCodec }], result: settingsResult };
-  const manifest = { ...artifact, package: packageKey, schemas: [], invocations: [preview, read, save] };
-  ctx.effect(() => ctx.get('typert').register(manifest), 'session-reset: owned preview RPC');
+  const read = { ...dry, id: `${packageKey}#sessionReset/sessionResetEvaluationSettings`, method: 'sessionResetEvaluationSettings', parameters: [], result: settingsResult };
+  const save = { ...dry, id: `${packageKey}#sessionReset/sessionResetSaveEvaluationSettings`, method: 'sessionResetSaveEvaluationSettings', parameters: [{ name: 'request', wire: 'request', source: 'json', codec: saveCodec }], result: settingsResult };
+  const recovery = { ...dry, id: `${packageKey}#sessionReset/sessionResetRecoveryStatus`, method: 'sessionResetRecoveryStatus', result: { ...dry.result, typeSymbol: `${packageKey}/types#RecoveryStatus` } };
+  const recoveries = { ...read, id: `${packageKey}#sessionReset/sessionResetRecoveries`, method: 'sessionResetRecoveries', result: { ...dry.result, typeSymbol: `${packageKey}/types#RecoveryIndexView` } };
+  const base = artifact.invocations.filter((item) => ['sessionResetDryRun', 'sessionResetExecute', 'sessionResetResume'].includes(item.method)).map((item) => ({ ...item, id: `${packageKey}#sessionReset/${item.method}` }));
+  const manifest = { ...artifact, package: packageKey, schemas: [], invocations: [...base, preview, read, save, recovery, recoveries] };
+  ctx.effect(() => ctx.get('typert').register(manifest), 'session-reset: owned RPC');
 }
