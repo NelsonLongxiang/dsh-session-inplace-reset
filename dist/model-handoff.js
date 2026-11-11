@@ -16,7 +16,7 @@ export function approvedModelHandoff(entry, choice, current) {
         throw new Error('会话或候选版本已变化，请重新预览');
     const { candidates, coverage } = candidatesFrom(current.snapshot.messages);
     const expectedChecks = ['constraints', 'state', 'faithful'];
-    if (report.mode !== 'shadow' || report.applied !== false || report.status !== 'pass' || !coverage.complete || !report.coverage.complete || report.coverage.total !== coverage.total || report.coverage.assessed !== coverage.assessed || report.budgetOmissions !== 0 || !report.selected.length || report.checks.length !== 3 || !expectedChecks.every((key) => report.checks.filter((check) => check.key === key && check.outcome === 'pass' && Number.isFinite(check.probability) && check.probability >= 0.7 && check.probability <= 1).length === 1))
+    if (report.mode !== 'shadow' || report.applied !== false || report.status !== 'pass' || report.auditComplete !== true || !coverage.complete || !report.coverage.complete || report.coverage.total !== coverage.total || report.coverage.assessed !== coverage.assessed || report.budgetOmissions !== 0 || !report.selected.length || report.checks.length !== 3 || !expectedChecks.every((key) => report.checks.filter((check) => check.key === key && check.outcome === 'pass' && Number.isFinite(check.probability) && check.probability >= 0.7 && check.probability <= 1).length === 1))
         throw new Error('候选未完整通过核对，未用于重置');
     const conservative = report.strategy === 'conservative';
     if (conservative && report.selected.length !== candidates.length)
