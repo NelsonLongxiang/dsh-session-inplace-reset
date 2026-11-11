@@ -212,7 +212,7 @@ window.__ModuleLoader__.load({
           !result && dry && h('div', { 'data-inplace-reset-model': true, style: { margin: '16px 0' } },
             h(Button, { variant: 'outline', disabled: loading || executing || recovering || modelLoading, onClick: previewModel }, modelLoading ? '正在筛选并核对…' : '模型筛选预览'),
             h('p', { style: { fontSize: 12 } }, '预览先不修改会话。通过检查后可明确选用这份候选；未选择时使用近期采样。'),
-            h('p', { style: { fontSize: 12 } }, '长历史最多8批、16次请求；超出预算的原文会明确标记未送评。'),
+            h('p', { style: { fontSize: 12 } }, '长历史按需运行，最多64批筛选、192次请求；完成即停止，超出上限的原文会明确标记未送评。'),
             modelError && h('p', { role: 'alert' }, modelError),
             model && h('div', { 'data-inplace-reset-model-status': model.status, 'data-inplace-reset-model-report': model.reportId, role: 'status' },
               h('b', null, ({ pass: '送评材料内检查通过', fail: '预览未通过', pending: '预览待核验', unavailable: '模型未评估' })[model.status]),

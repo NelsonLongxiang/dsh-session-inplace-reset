@@ -42,6 +42,30 @@ test('every batch is audited and the lowest batch result is displayed without in
   assert.equal(report.auditAttempts![0].batches!.length, report.batchCount);
 });
 
+test('1049 source fragments can finish selection and all audits beyond the old 8/16 limits', async () => {
+  const source = snapshot(1049, '保留可核对状态，闲聊不作为新增事实。');
+  const scored = new Set<string>();
+  const audited = new Set<string>();
+  const report = await previewHandoff(source, async (state, questions) => {
+    const input = state as { candidates: Candidate[]; candidate_handoff?: { selected_messages: Candidate[] } };
+    for (const key of Object.keys(questions).filter((key) => key.endsWith('_importance'))) {
+      const id = key.replace('_importance', '');
+      assert.ok(!scored.has(id)); scored.add(id);
+    }
+    if (input.candidate_handoff) input.candidates.forEach((row) => audited.add(row.id));
+    const response = answers(questions);
+    for (const [key, question] of Object.entries(questions)) if (question.type === 'score' && key !== 'c0_importance' && key !== 'c1048_importance') response.answers![key] = { score: 0, probabilities: { 0: 1, 1: 0, 2: 0, 3: 0 } };
+    return response;
+  });
+  assert.equal(scored.size, 1049);
+  assert.equal(audited.size, 1049);
+  assert.equal(report.coverage.complete, true);
+  assert.equal(report.auditComplete, true);
+  assert.ok(report.batchCount! > 8 && report.batchCount! <= MAX_BATCHES);
+  assert.ok(report.requestCount! > 16 && report.requestCount! <= MAX_EVALUATION_CALLS);
+  assert.equal(report.status, 'pass');
+});
+
 test('large histories stop at a finite request bound and never label the remainder covered', async () => {
   const report = await previewHandoff(snapshot(2000, '字'.repeat(900)), async (_state, questions) => answers(questions));
   assert.ok(report.batchCount! <= MAX_BATCHES);

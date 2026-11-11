@@ -1,7 +1,7 @@
-export const MAX_BATCHES = 8;
+export const MAX_BATCHES = 64;
 export const MAX_BATCH_CANDIDATES = 32;
 export const MAX_BATCH_BYTES = 48 * 1024;
-export const MAX_EVALUATION_CALLS = 16;
+export const MAX_EVALUATION_CALLS = 192;
 /** Preserve source anchors in every context; score each candidate at most once and disclose everything outside the bound. */
 export function candidateBatches(candidates, { quoted = [], maxBatches = MAX_BATCHES } = {}) {
     if (maxBatches <= 0)

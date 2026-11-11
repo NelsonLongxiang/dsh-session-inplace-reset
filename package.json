@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-session-inplace-reset",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Same-ID session reset with verified backup, resumable recovery, and explicitly chosen model handoffs.",
   "dsh": {
     "bundle": {
