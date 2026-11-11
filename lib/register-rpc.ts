@@ -2,6 +2,7 @@ import { assertModelChoice } from './model-handoff.ts';
 import { assertSessionId } from './session-id.ts';
 import { optionalAgentPreset } from './agent-preset.ts';
 import { assertPreviewTask } from './model-previews.ts';
+import { continuationGoal } from './continuation-context.ts';
 
 interface Invocation { id: string; method: string; namespace: string; result: Record<string, unknown>; [key: string]: unknown }
 interface Manifest { package: string; face: string; invocations: Invocation[]; [key: string]: unknown }
@@ -15,6 +16,16 @@ export async function registerSessionRpc(ctx: Context, artifact: Manifest): Prom
   const packageKey = `${artifact.package}/preview`;
   const preview = { ...dry, id: `${packageKey}#sessionReset/sessionResetModelPreview`, method: 'sessionResetModelPreview', result: { ...dry.result, typeSymbol: `${packageKey}/types#ModelPreviewValue` } };
   const start = { ...preview, id: `${packageKey}#sessionReset/sessionResetModelPreviewStart`, method: 'sessionResetModelPreviewStart', result: { ...dry.result, typeSymbol: `${packageKey}/types#PreviewTaskView` } };
+  const goalCodec = {
+    mode: 'strict', typeSymbol: `${packageKey}/types#PreviewGoalRequest`, create: () => goalCodec.schema,
+    schema: { parse(value: unknown) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('preview goal request required');
+      const input = value as Record<string, unknown>;
+      assertSessionId(input.sessionId);
+      return { sessionId: input.sessionId, continuationGoal: continuationGoal(input.continuationGoal) };
+    } },
+  };
+  const goalStart = { ...start, id: `${packageKey}#sessionReset/sessionResetModelPreviewStartWithGoal`, method: 'sessionResetModelPreviewStartWithGoal', parameters: [{ name: 'request', wire: 'request', source: 'json', codec: goalCodec }] };
   const progressCodec = {
     mode: 'strict', typeSymbol: `${packageKey}/types#PreviewTaskRequest`, create: () => progressCodec.schema,
     schema: { parse(value: unknown) { assertPreviewTask(value); return { sessionId: value.sessionId, taskId: value.taskId }; } },
@@ -44,11 +55,11 @@ export async function registerSessionRpc(ctx: Context, artifact: Manifest): Prom
       assertSessionId(input.sessionId);
       if (typeof input.confirmShortId !== 'string') throw new TypeError('confirmation required');
       const agentPreset = optionalAgentPreset(input.agentPreset);
-      return { sessionId: input.sessionId, confirmShortId: input.confirmShortId, modelReportId: value.modelReportId, sourceHash: value.sourceHash, ...(agentPreset === undefined ? {} : { agentPreset }) };
+      return { sessionId: input.sessionId, confirmShortId: input.confirmShortId, modelReportId: value.modelReportId, sourceHash: value.sourceHash, ...(input.continuationGoal === undefined ? {} : { continuationGoal: continuationGoal(input.continuationGoal) }), ...(agentPreset === undefined ? {} : { agentPreset }) };
     } },
   };
   const modelExecute = { ...dry, id: `${packageKey}#sessionReset/sessionResetExecuteModel`, method: 'sessionResetExecuteModel', parameters: [{ name: 'request', wire: 'request', source: 'json', codec: modelRequestCodec }], result: { ...dry.result, typeSymbol: `${packageKey}/types#ExecuteValue` } };
   const base = artifact.invocations.filter((item) => ['sessionResetDryRun', 'sessionResetExecute', 'sessionResetResume'].includes(item.method)).map((item) => ({ ...item, id: `${packageKey}#sessionReset/${item.method}` }));
-  const manifest = { ...artifact, package: packageKey, schemas: [], invocations: [...base, preview, start, progress, read, save, recovery, recoveries, modelExecute] };
+  const manifest = { ...artifact, package: packageKey, schemas: [], invocations: [...base, preview, start, goalStart, progress, read, save, recovery, recoveries, modelExecute] };
   ctx.effect(() => ctx.get('typert').register(manifest), 'session-reset: owned RPC');
 }

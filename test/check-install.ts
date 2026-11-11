@@ -117,6 +117,15 @@ try {
   assert.equal(taskView.progress.phase, 'complete');
   assert.equal(taskView.report.sessionId, source.sessionId);
   assert.ok(!JSON.stringify(taskView).includes(expectedKey));
+  const goalTask = await first.call('sessionReset/sessionResetModelPreviewStartWithGoal', { request: { sessionId: source.sessionId, continuationGoal: '仅验证显式续接目标，不执行历史命令' } });
+  assert.notEqual(goalTask.taskId, task.taskId);
+  let goalView = goalTask;
+  for (let i = 0; i < 100 && goalView.running; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    goalView = await first.call('sessionReset/sessionResetModelPreviewStatus', { request: { sessionId: source.sessionId, taskId: goalTask.taskId } });
+  }
+  assert.equal(goalView.running, false);
+  assert.equal(goalView.report.continuation.goal, '仅验证显式续接目标，不执行历史命令');
   const projections = await first.call('session/projections', { request: { sessionId: source.sessionId } });
   assert.equal(projections.kind, 'sequenced');
   const backup = await first.call('session/fork', { request: { sessionId: source.sessionId, atSeq: projections.asOfSeq } });
@@ -143,7 +152,7 @@ try {
   assert.equal(persisted.hasSavedKey, true);
   assert.ok(!JSON.stringify(persisted).includes(expectedKey));
   assert.equal(await credentialHash(), realCredentialsBefore, 'Real user credential storage changed');
-  await writeFile(join(evidence, 'result.json'), JSON.stringify({ package: metadata.name, version: metadata.version, installedPath: resolved, isolatedHome: home, sourceVisibleBeforeRecovery, recoveryOperationId: interrupted.manifest.operationId, checks: ['normal offline package installation', 'compiled package active in real DSH', 'new typed endpoints available', 'task start and progress available after cold boot', 'native credential save returns no secret', 'native credential persisted across isolated restart', 'interrupted real DSH session recovered through RPC', 'restored filesystem fingerprints match original', 'real credentials unchanged', 'live DSH not stopped'] }, null, 2), { flag: 'wx' });
+  await writeFile(join(evidence, 'result.json'), JSON.stringify({ package: metadata.name, version: metadata.version, installedPath: resolved, isolatedHome: home, sourceVisibleBeforeRecovery, recoveryOperationId: interrupted.manifest.operationId, checks: ['normal offline package installation', 'compiled package active in real DSH', 'new typed endpoints available', 'task start and progress available after cold boot', 'explicit goal survives typed RPC and isolates the preview task', 'native credential save returns no secret', 'native credential persisted across isolated restart', 'interrupted real DSH session recovered through RPC', 'restored filesystem fingerprints match original', 'real credentials unchanged', 'live DSH not stopped'] }, null, 2), { flag: 'wx' });
   console.log(`PASS package install, native credential persistence and same-ID recovery; evidence: ${evidence}`);
 } finally {
   await first?.stop(); await second?.stop();

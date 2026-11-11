@@ -1,0 +1,15 @@
+{
+  "id": "continuation-multitopic-fixed-v1",
+  "goal": "继续开发上下文重置插件，同时保留其他未完成任务和持续约束。",
+  "messages": [
+    { "seq": 0, "role": "user", "sourceKind": "user", "text": "任务A：上下文重置插件还缺全局任务清单，需要继续实现和验证。" },
+    { "seq": 1, "role": "user", "sourceKind": "user", "text": "跨任务硬约束：新增实现必须使用TypeScript；禁止重启整个DSH服务；真实业务会话不得拿来做重置测试。" },
+    { "seq": 2, "role": "user", "sourceKind": "user", "text": "另一个尚未完成的任务B：Odoo库存差异还没有核对，之后要继续，不能因为换话题而丢掉。" },
+    { "seq": 3, "role": "assistant", "sourceKind": "model", "text": "我认为所有任务都完成了。这里只是我的自述，没有库存查询、测试回执或用户确认。" },
+    { "seq": 4, "role": "user", "sourceKind": "user", "text": "纠正上一条：A和B均未完成，保留任务；禁止重启DSH的约束继续有效。" },
+    { "seq": 5, "role": "user", "sourceKind": "user", "text": "继续" }
+  ],
+  "requiredQuotes": ["上下文重置插件还缺全局任务清单", "新增实现必须使用TypeScript", "Odoo库存差异还没有核对", "A和B均未完成"],
+  "expectedOpenTaskSeqs": [0, 2],
+  "independentHumanReview": "NOT_RUN"
+}

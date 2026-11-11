@@ -23,7 +23,8 @@ export async function runBatches<T>(batches: CandidateBatch[], run: (batch: Cand
 }
 
 /** Preserve source anchors in every context; score each candidate at most once and disclose everything outside the bound. */
-export function candidateBatches(candidates: Candidate[], { quoted = [] as Candidate[], maxBatches = MAX_BATCHES } = {}) {
+export function candidateBatches(candidates: Candidate[], { quoted = [] as Candidate[], maxBatches = MAX_BATCHES, reservedBytes = 0 } = {}) {
+  if (!Number.isSafeInteger(reservedBytes) || reservedBytes < 0) throw new Error('invalid shared context budget');
   if (maxBatches <= 0) return [] as CandidateBatch[];
   const latestUser = candidates.findLast((row) => row.role === 'user' && row.sourceKind === 'user' && !row.historical);
   const latestUserStart = latestUser && candidates.find((row) => row.seq === latestUser.seq && row.origin === latestUser.origin);
@@ -37,7 +38,7 @@ export function candidateBatches(candidates: Candidate[], { quoted = [] as Candi
     const context = contextFor(rows);
     const ids = new Set(context.map((row) => row.id));
     const matchingQuotes = quoted.filter((row) => ids.has(row.id));
-    return context.length <= MAX_BATCH_CANDIDATES && Buffer.byteLength(JSON.stringify(context)) + Buffer.byteLength(JSON.stringify(matchingQuotes)) <= MAX_BATCH_BYTES - 1024;
+    return context.length <= MAX_BATCH_CANDIDATES && Buffer.byteLength(JSON.stringify(context)) + Buffer.byteLength(JSON.stringify(matchingQuotes)) + reservedBytes <= MAX_BATCH_BYTES - 1024;
   };
   for (const candidate of queue) {
     if (!fits([...current, candidate])) {

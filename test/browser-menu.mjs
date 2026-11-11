@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { webUrl, cdpUrl } from './runtime.ts';
 import { Ledger } from '../lib/ledger.ts';
 import { ResetJournal } from '../lib/reset-journal.ts';
+import { canonicalContinuationGoal } from '../lib/handoff-eval.ts';
+import { sealContinuation, CONTINUATION_VERSION } from '../lib/continuation-context.ts';
 
 const cdp = cdpUrl;
 const base = webUrl.replace(/\/$/, '');
@@ -79,19 +81,23 @@ socket.addEventListener('message', ({ data }) => {
     } else if (body.method.endsWith('/sessionResetEvaluationSettings') && savedEvaluationSettings) {
       const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: true, value: savedEvaluationSettings } });
       void send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'content-type', value: 'application/json' }], body: Buffer.from(response).toString('base64') });
-    } else if (body.method.endsWith('/sessionResetModelPreviewStart') && simulatedModel) {
-      simulatedTask = { taskId: crypto.randomUUID(), sessionId: body.payload.args.sessionId, startedAt: new Date().toISOString(), report: { ...simulatedModel, sessionId: body.payload.args.sessionId, concurrency: 4, peakConcurrency: 4 }, step: 0, hold: simulatedModel.status === 'pass' };
+    } else if (/\/sessionResetModelPreviewStart(?:WithGoal)?$/.test(body.method) && simulatedModel) {
+      const input = body.payload.args.request ?? body.payload.args;
+      const original = simulatedModel.selected[0];
+      const entries = original ? [{ candidate: { id: original.id, seq: original.seq, role: original.role, sourceKind: original.sourceKind, text: original.text, origin: String(original.seq), historical: false, offset: 0, order: 0 }, kinds: ['task', 'constraint'], probabilities: { task: 0.95, constraint: 0.95, change: 0.05 }, resolved: { probability: 0.05, outcome: 'fail' } }] : [];
+      const context = sealContinuation({ version: CONTINUATION_VERSION, goal: canonicalContinuationGoal(input.continuationGoal), scopeOnly: true, sourceHash: simulatedModel.sourceHash, hash: '', entries, coverage: simulatedModel.coverage, resolutionComplete: true, uncertain: false, overflow: false });
+      simulatedTask = { taskId: crypto.randomUUID(), sessionId: input.sessionId, startedAt: new Date().toISOString(), report: { ...simulatedModel, sessionId: input.sessionId, continuation: context, concurrency: 4, peakConcurrency: 4 }, step: 0, hold: simulatedModel.status === 'pass' };
       simulatedModel = null;
-      const value = { ...simulatedTask, report: undefined, running: true, progress: { phase: 'selection', completedBatches: 0, totalBatches: 5, running: 4, concurrency: 4, requestCount: 4, requestLimit: 192, assessed: 0, sourceTotal: simulatedTask.report.coverage.total } };
+      const value = { ...simulatedTask, report: undefined, running: true, progress: { phase: 'inventory', completedBatches: 0, totalBatches: 5, running: 4, concurrency: 4, requestCount: 4, requestLimit: 192, assessed: 0, sourceTotal: simulatedTask.report.coverage.total } };
       const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: true, value } });
       void send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'content-type', value: 'application/json' }], body: Buffer.from(response).toString('base64') });
     } else if (body.method.endsWith('/sessionResetModelPreviewStatus') && simulatedTask?.taskId === body.payload.args.request?.taskId) {
       simulatedTask.step = Math.min(simulatedTask.step + 1, simulatedTask.hold ? 2 : 3);
       const step = simulatedTask.step;
-      const value = { sessionId: wrongProgressSession ? `session-${crypto.randomUUID()}` : simulatedTask.sessionId, taskId: simulatedTask.taskId, startedAt: simulatedTask.startedAt, running: step < 3, progress: { phase: step < 2 ? 'selection' : step === 2 ? 'audit' : 'complete', completedBatches: step === 3 ? 1 : 2, totalBatches: step === 3 ? 1 : 5, running: step < 3 ? 3 : 0, concurrency: 4, requestCount: step === 1 ? 4 : step === 2 ? 8 : 10, requestLimit: 192, assessed: step < 2 ? Math.min(60, simulatedTask.report.coverage.total) : simulatedTask.report.coverage.assessed, sourceTotal: simulatedTask.report.coverage.total }, ...(step === 3 ? { report: simulatedTask.report } : {}) };
+      const value = { sessionId: wrongProgressSession ? `session-${crypto.randomUUID()}` : simulatedTask.sessionId, taskId: simulatedTask.taskId, startedAt: simulatedTask.startedAt, running: step < 3, progress: { phase: step < 2 ? 'resolution' : step === 2 ? 'audit' : 'complete', completedBatches: step === 3 ? 1 : 2, totalBatches: step === 3 ? 1 : 5, running: step < 3 ? 3 : 0, concurrency: 4, requestCount: step === 1 ? 4 : step === 2 ? 8 : 10, requestLimit: 192, catalogued: simulatedTask.report.coverage.assessed, assessed: step < 2 ? Math.min(60, simulatedTask.report.coverage.total) : simulatedTask.report.coverage.assessed, sourceTotal: simulatedTask.report.coverage.total }, ...(step === 3 ? { report: simulatedTask.report } : {}) };
       const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: true, value } });
       void send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'content-type', value: 'application/json' }], body: Buffer.from(response).toString('base64') });
-    } else if (/\/sessionResetModelPreview(?:Start|Status)?$/.test(body.method) && !realModelAllowed && !process.argv.includes('--model-api-probe')) {
+    } else if (/\/sessionResetModelPreview(?:Start(?:WithGoal)?|Status)?$/.test(body.method) && !realModelAllowed && !process.argv.includes('--model-api-probe')) {
       const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: false, error: { message: 'Browser test blocked an unexpected model request' } } });
       void send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'content-type', value: 'application/json' }], body: Buffer.from(response).toString('base64') });
     } else if ((body.method.endsWith('/sessionResetExecute') || body.method.endsWith('/sessionResetExecuteModel')) && (!permittedExecutionId || body.payload.args.request?.sessionId !== permittedExecutionId)) {
@@ -380,6 +386,9 @@ try {
     await openPreview(second.id);
     await until(`document.querySelector('[data-inplace-reset-stats]')?.textContent`, 'baseline before simulated model report');
     simulatedModel = { reportId: crypto.randomUUID(), sourceHash: 'a'.repeat(64), status, mode: 'shadow', applied: false, auditComplete: status === 'pass', batchCount: 5, requestCount: 10, coverage: { total: 128, assessed: status === 'pending' ? 64 : 128, complete: status !== 'pending' }, selected: status === 'unavailable' ? [] : [{ id: 'c0', seq: 0, role: 'user', sourceKind: 'user', text: '原文约束：禁止重启实例', retention: 'pass', superseded: 'fail' }], checks: status === 'unavailable' ? [] : ['constraints', 'state', 'faithful'].map((key) => ({ key, probability: status === 'pass' ? 0.95 : status === 'fail' ? 0.1 : 0.5, outcome: status === 'pass' ? 'pass' : status === 'fail' ? 'fail' : 'pending' })) };
+    if (status === 'pass') {
+      await evaluate(`(() => { const input = document.getElementById('inplace-reset-continuation-goal'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, '继续开发上下文重置插件'); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    }
     await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(button => button.textContent === '模型筛选预览').click()`);
     if (status === 'pass') {
       await until(`document.querySelector('[data-inplace-reset-progress]')?.dataset.inplaceResetProgress === 'audit'`, 'parallel progress reaches audit phase');
@@ -399,16 +408,26 @@ try {
     assert.equal(requests.at(-1).sessionId, second.id);
     assert.equal(await evaluate(`document.querySelector('[data-inplace-reset-use-model]').disabled`), status !== 'pass');
     if (status === 'pass') {
+      assert.equal(await evaluate(`document.querySelector('[data-inplace-reset-goal]').textContent`), '继续开发上下文重置插件');
+      assert.equal(await evaluate(`document.querySelector('[data-inplace-reset-continuation]').textContent.includes('任务 1 · 约束 1')`), true);
+      await evaluate(`document.querySelector('[data-inplace-reset-continuation] details').open = true`);
+      const contextShot = await send('Page.captureScreenshot', { format: 'png' });
+      await writeFile(join(out, 'continuation-context.png'), Buffer.from(contextShot.data, 'base64'));
       await evaluate(`document.querySelector('[data-inplace-reset-use-model]').click()`);
       await until(`!!document.querySelector('[data-inplace-reset-selected-model]')`, 'candidate explicitly selected');
       assert.equal(await evaluate(`document.getElementById('inplace-reset-confirm').value`), '');
       assert.equal(await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(button => button.textContent === '应用候选并重置').disabled`), true);
       await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(button => button.textContent === '改用近期采样').click()`);
       assert.equal(await evaluate(`!!document.querySelector('[data-inplace-reset-selected-model]')`), false);
+      await evaluate(`document.querySelector('[data-inplace-reset-use-model]').click()`);
+      await evaluate(`(() => { const input = document.getElementById('inplace-reset-confirm'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(second.id.slice(8, 16))}); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      await evaluate(`(() => { const input = document.getElementById('inplace-reset-continuation-goal'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, '改为接续库存核对'); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      await until(`!document.querySelector('[data-inplace-reset-model-status]') && !document.querySelector('[data-inplace-reset-selected-model]')`, 'goal edit clears the old report and selected candidate');
+      assert.equal(await evaluate(`document.getElementById('inplace-reset-confirm').value`), '');
     }
     await closePreview();
   }
-  evidence.checks.push('model pass, pending, fail and unavailable are distinct', 'model preview never fills reset confirmation', 'only a passing candidate can be explicitly selected', 'selection does not confirm or execute a reset', 'live phase progress and request counters update before completion', 'actual parallel count and accessible progress bar are visible');
+  evidence.checks.push('model pass, pending, fail and unavailable are distinct', 'model preview never fills reset confirmation', 'only a passing candidate can be explicitly selected', 'selection does not confirm or execute a reset', 'live phase progress and request counters update before completion', 'actual parallel count and accessible progress bar are visible', 'explicit continuation goal and cited task ledger are displayed', 'editing the goal clears the report, selection and confirmation');
 
   for (const wrongSession of [false, true]) {
     await openPreview(second.id);

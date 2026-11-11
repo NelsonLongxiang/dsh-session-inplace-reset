@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { evaluateConnection } from './decision-model.ts';
 import type { EvaluationConnection } from './decision-model.ts';
-import { previewHandoff, RUBRIC, SAMPLER, sourceDigest } from './handoff-eval.ts';
+import { previewHandoff, canonicalContinuationGoal, RUBRIC, SAMPLER, sourceDigest } from './handoff-eval.ts';
 import type { PreviewProgress, SourceSnapshot } from './handoff-eval.ts';
 import { MAX_EVALUATION_CALLS, MAX_PARALLEL_REQUESTS } from './handoff-batches.ts';
 import { approvedModelHandoff } from './model-handoff.ts';
@@ -32,10 +32,11 @@ export function createModelPreviews(ctx: Host, config: Config, loader: { resolve
   const pendingTasks = new Set<Promise<CachedPreview>>();
   let active = 0, closing = false;
   const targetBytes = config.handoffTargetKB * 1024;
-  const keyFor = (snapshot: SourceSnapshot, connectionKey: string) => createHash('sha256').update(JSON.stringify([RUBRIC, SAMPLER, targetBytes, connectionKey, sourceDigest(snapshot)])).digest('hex');
+  const keyFor = (snapshot: SourceSnapshot, connectionKey: string, goal: string) => createHash('sha256').update(JSON.stringify([RUBRIC, SAMPLER, targetBytes, goal, connectionKey, sourceDigest(snapshot)])).digest('hex');
   const snapshotOf = (id: string, observation: Observation) => snapshotFromObservation(id, observation, ctx.get('sessions').messageProjections, loader);
   const view = (task: PreviewTask): PreviewTaskView => structuredClone({ sessionId: task.sessionId, taskId: task.taskId, startedAt: task.startedAt, running: task.running, progress: task.progress, ...(task.report ? { report: task.report } : {}), ...(task.error ? { error: task.error } : {}) });
-  const taskFor = async (sessionId: string) => {
+  const taskFor = async (sessionId: string, requestedGoal?: string) => {
+    const goal = canonicalContinuationGoal(requestedGoal);
     if (closing) throw new Error('插件正在停止，未启动新的评估');
     assertSessionId(sessionId);
     const observation = await ctx.sessionQuery.observeSession(sessionId, { projectionMode: 'none' });
@@ -43,7 +44,7 @@ export function createModelPreviews(ctx: Host, config: Config, loader: { resolve
     try { snapshot = await snapshotOf(sessionId, observation); }
     finally { observation[Symbol.dispose]?.(); }
     const connection = await settings.connection();
-    const key = keyFor(snapshot, connection.cacheKey);
+    const key = keyFor(snapshot, connection.cacheKey, goal);
     const cached = previews.get(key);
     if (cached && !cached.error && cached.report?.status !== 'unavailable') return cached;
     if (closing) throw new Error('插件正在停止，未启动新的评估');
@@ -61,7 +62,7 @@ export function createModelPreviews(ctx: Host, config: Config, loader: { resolve
     }
     task.pending = (async () => {
       try {
-        const report = await previewHandoff(snapshot, (state, questions) => closing ? Promise.resolve({ error: '评估请求未完成' }) : evaluate(connection, state, questions), { targetBytes, onProgress: (value) => { task.progress = { ...value, phase: value.phase === 'complete' ? 'aggregation' : value.phase }; } });
+        const report = await previewHandoff(snapshot, (state, questions) => closing ? Promise.resolve({ error: '评估请求未完成' }) : evaluate(connection, state, questions), { targetBytes, continuationGoal: goal, onProgress: (value) => { task.progress = { ...value, phase: value.phase === 'complete' ? 'aggregation' : value.phase }; } });
         const reportId = randomUUID();
         const directory = join(reportRoot, `model-${reportId}`);
         await mkdir(directory, { recursive: true });
@@ -81,7 +82,7 @@ export function createModelPreviews(ctx: Host, config: Config, loader: { resolve
   return {
     clear() { previews.clear(); },
     async dispose() { closing = true; await Promise.allSettled(pendingTasks); },
-    async start(sessionId: string): Promise<PreviewTaskView> { return view(await taskFor(sessionId)); },
+    async start(sessionId: string, goal?: string): Promise<PreviewTaskView> { return view(await taskFor(sessionId, goal)); },
     status(request: PreviewTaskRequest): PreviewTaskView {
       assertPreviewTask(request);
       const task = [...previews.values()].find((entry) => entry.taskId === request.taskId && entry.sessionId === request.sessionId);
@@ -92,7 +93,7 @@ export function createModelPreviews(ctx: Host, config: Config, loader: { resolve
     async handoff(sessionId: string, observation: Observation, choice: ModelChoice) {
       const snapshot = await snapshotOf(sessionId, observation);
       const connection = await settings.connection();
-      const pending = previews.get(keyFor(snapshot, connection.cacheKey))?.pending;
+      const pending = previews.get(keyFor(snapshot, connection.cacheKey, canonicalContinuationGoal(choice.continuationGoal)))?.pending;
       const entry = pending ? await pending : undefined;
       return approvedModelHandoff(entry, choice, { snapshot, connectionKey: connection.cacheKey, targetBytes, hardCapBytes: config.handoffHardCapKB * 1024 });
     },

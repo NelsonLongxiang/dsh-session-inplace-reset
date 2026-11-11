@@ -28,21 +28,29 @@
 
 展开已识别的历史交接并保留历史引用标记，限制展开深度。候选输入在最多64批内受数量和UTF-8体积约束：每批上下文≤32片段/48KB，包含首尾和最近直接用户消息锚点；片段只评分一次，最多192次模型请求，实际完成即停止。筛选和核对共用的额度由原8批/16次提高，避免千级片段在核对前因固定上限停止；容量边界之外、调用中断后未提交的批次、输出预算遗漏均分别记录，不把计划送评数当完成覆盖。
 
+`lib/continuation-context.ts` 把续接目标和任务/约束/纠正清单显式化。默认范围是接续全部未完成任务，允许用户填写更具体目标，但其他主题未闭环线索及持续约束仍要保留。目标只用于筛选，不增加权限，经过既有脱敏后进入请求、缓存和报告。
+
+先用既有布尔评估协议分批提取原文线索，汇总全局清单，再在相同全局原文上判定任务闭环/约束撤销线索。没有新增自由生成模型或依赖；助手自述和历史引用不能成为新增授权，状态标记只是模型推断。所有清单原文都先保留，不直接据闭环判断删除。清单限定16KB共享输入预算，超过预算、分类/状态灰带、覆盖或闭环核对不完整均停止通过，不截断原件。
+
+每个后续筛选/核对批次携带同一份冻结清单，来源+对应引文+共享清单受48KB合计约束。清单引用ID得到程序级优先保留与执行复核；模型仍按本批来源ID核对引用，其他清单ID在所属来源批检查，避免把分批缺席误判成全局遗漏。
+
 `lib/handoff-batches.ts` 以最多4个worker并行执行同一阶段的批次；筛选全部收口后才并行核对。结果槽位绑定原始批次索引，乱序回执不影响来源顺序或最低概率聚合，也不能用非本批ID的答案覆盖其他批次。错误后停止新派发、等待在途请求收口，只有成功且格式合法的回执增加完成批次及评分覆盖。
 
 第一阶段分批并行按有业务价值排序的0–3级判据评估必要性，同时识别后续纠正；以保留等级2/3的合计概率做三态路由。灰带保留原文。第二阶段从同一候选交接包切出与本批来源ID对应的引文，按来源+引文合计≤48KB拆细核对，避免反复发送整份大候选触发提供方token上限；全部来源都须核对完毕，否则保持pending。保留逐批trace，三项显示值取各批最低值，要求每批都通过；它不是全局联合概率。如果筛选遗漏上下文导致核对未通过，且完整送评原文能入预算、无概率灰带并有剩余请求额度，最多改成全量原文候选再逐批核对一次。原评分、首次核对和最终核对均保留，最终状态仅按最终候选全部判据计算；不重复相同候选、不选取两次结果中的较高值。
 
-模型本身没有重置、执行命令或发布的权限。用户明确选中完整通过的候选、输入短ID后，独立的 `sessionResetExecuteModel` 接口才进入既有重置事务。`lib/model-previews.ts` 保持最多8份进程内缓存，运行中的任务不因旧缓存淘汰而丢失。`sessionResetModelPreviewStart(sessionId)` 创建或接回同一源/连接任务，`sessionResetModelPreviewStatus({sessionId,taskId})` 只读进度，必须同时匹配会话与任务ID。阶段、真实完成批次、在途请求、并行上限4、请求消耗及评分覆盖均由后台维护；结束后返回同一报告。旧同步预览接口仍等待同一任务。最多2份预览同时运行，插件网络请求总上限8。报告、当前连接私有摘要、目标体积及源投影摘要共同绑定候选。配置变更清缓存，缓存丢失后不从历史报告JSON恢复执行资格。
+模型本身没有重置、执行命令或发布的权限。用户明确选中完整通过的候选、输入短ID后，独立的 `sessionResetExecuteModel` 接口才进入既有重置事务。`lib/model-previews.ts` 保持最多8份进程内缓存，运行中的任务不因旧缓存淘汰而丢失。`sessionResetModelPreviewStart(sessionId)` 保持原默认范围入口；新增 `sessionResetModelPreviewStartWithGoal({sessionId,continuationGoal})` 创建或接回显式目标任务，`sessionResetModelPreviewStatus({sessionId,taskId})` 只读进度，必须同时匹配会话与任务ID。阶段、真实完成批次、在途请求、并行上限4、请求消耗及评分覆盖均由后台维护；结束后返回同一报告。旧同步预览接口仍等待同一任务。最多2份预览同时运行，插件网络请求总上限8。报告、当前连接私有摘要、目标体积、续接目标及源投影摘要共同绑定候选。配置变更清缓存，缓存丢失后不从历史报告JSON恢复执行资格。
 
-`lib/model-handoff.ts` 在会话闸内、目标运行时已释放后，对同一备份观察切片重新构造源投影，核对报告ID、源摘要/游标、采样/判据版本、完整覆盖、三项门槛、原文与来源、预算和种子一致性。失败在fork和隔离前拒绝，不降级到近期采样。通过后原样保存候选种子，回执与事务记录带报告ID和源摘要，执行不增加模型调用。Typed output仍不是事实真值，合成样例不证明真实长历史准确率。
+`lib/model-handoff.ts` 在会话闸内、目标运行时已释放后，对同一备份观察切片重新构造源投影，核对报告ID、源摘要/游标、明确续接目标、全局清单摘要与逐条原文身份、采样/判据版本、完整覆盖、三项门槛、原文与来源、预算和种子一致性。失败在fork和隔离前拒绝，不降级到近期采样。通过后原样保存version4候选种子：原文加标明scopeOnly的筛选目标/清单来源索引，闭环判定和概率不写成续聊事实。回执与事务记录带报告ID和源摘要，执行不增加模型调用。Typed output仍不是事实真值，合成样例不证明真实长历史准确率。
 
 ## 接口与客户端
 
-`lib/remote-service.ts` 使用宿主自己的 `TypertRemoteService` 挂载插件拥有的 `sessionReset` 服务，不再给 `workspaceRegistry` 添加方法或依赖残留绑定。当前接口为 `/api/sessionReset/<method>`，方法名保持 `sessionResetDryRun`、`sessionResetExecute`、`sessionResetResume`、`sessionResetModelPreview`、`sessionResetEvaluationSettings`、`sessionResetSaveEvaluationSettings`、`sessionResetRecoveryStatus`、`sessionResetRecoveries`，独立的 `sessionResetExecuteModel`，以及只读任务入口 `sessionResetModelPreviewStart` / `sessionResetModelPreviewStatus`。
+`lib/remote-service.ts` 使用宿主自己的 `TypertRemoteService` 挂载插件拥有的 `sessionReset` 服务，不再给 `workspaceRegistry` 添加方法或依赖残留绑定。当前接口为 `/api/sessionReset/<method>`，方法名保持 `sessionResetDryRun`、`sessionResetExecute`、`sessionResetResume`、`sessionResetModelPreview`、`sessionResetEvaluationSettings`、`sessionResetSaveEvaluationSettings`、`sessionResetRecoveryStatus`、`sessionResetRecoveries`，独立的 `sessionResetExecuteModel`，以及只读任务入口 `sessionResetModelPreviewStart` / `sessionResetModelPreviewStartWithGoal` / `sessionResetModelPreviewStatus`。
 
 宿主自动TYPERT loader按包名长期缓存基础接口清单。当前自动入口只发布空清单，本包已导出的 `/preview` 子模块贡献拥有上述接口。旧版缓存的 `workspaceRegistry` 贡献保持原拥有者，新命名空间与之并存；卸载仅移除自己的服务和贡献，不重载全局缓存。
 
 `src/client.ts` 是浏览器单一源码；`tools/build-client.ts` 生成 `lib/client.js`，`tools/build-package.ts` 将所有发行入口编译到 `dist/*.js` 并改写 `.ts` 相对导入。普通 `node_modules` 安装不再依赖 Node 类型擦除。
+
+续接目标输入属于模型预览范围；改变目标清除旧候选、报告和确认。报告展示生效目标、全局任务/约束/纠正数量及逐条原文/来源，闭环状态明确标成推断。
 
 模型进度每800ms读取一次，只接受匹配会话和任务ID的数据；显示当前阶段、批次进度、实际并行数、请求消耗和用时，完成后显示并行峰值。关闭弹窗中止轮询，后台任务继续，来源和配置未变时重开可接回。进度100%只表示评估工作结束，质量通过仍单独判断。
 

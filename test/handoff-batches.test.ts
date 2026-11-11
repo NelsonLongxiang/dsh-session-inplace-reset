@@ -5,7 +5,7 @@ import { candidatesFrom, previewHandoff } from '../lib/handoff-eval.ts';
 import type { Candidate, SourceSnapshot } from '../lib/handoff-eval.ts';
 import type { Evaluation, Questions } from '../lib/decision-model.ts';
 const snapshot = (count: number, text = '保留此阶段有效状态') => ({ sessionId: 'session-11111111-1111-1111-1111-111111111111', cursor: count - 1, messages: Array.from({ length: count }, (_, seq) => ({ seq, role: 'user', sourceKind: 'user', text: `来源 ${seq}：${text}` })) } as SourceSnapshot);
-const answers = (questions: Questions, probability = 0.95): Evaluation => ({ answers: Object.fromEntries(Object.entries(questions).map(([key, question]) => [key, question.type === 'score' ? { score: 3, probabilities: { 0: 0, 1: 0, 2: 0, 3: 1 } } : { probability: key.endsWith('_superseded') ? 0.05 : probability }])) });
+const answers = (questions: Questions, probability = 0.95): Evaluation => ({ answers: Object.fromEntries(Object.entries(questions).map(([key, question]) => [key, question.type === 'score' ? { score: 3, probabilities: { 0: 0, 1: 0, 2: 0, 3: 1 } } : { probability: key.startsWith('context_') || key.startsWith('resolve_') || key.endsWith('_superseded') ? 0.05 : probability }])) });
 
 test('89 source messages are scored exactly once with bounded contexts and source anchors', () => {
   const source = snapshot(89);
@@ -137,7 +137,7 @@ test('out-of-order responses aggregate by source order and report actual concurr
   assert.deepEqual(report.auditAttempts![0].batches!.map((batch) => batch.candidateIds), sourceBatches.map((batch) => batch.candidates.map((row) => row.id)));
   assert.equal(report.status, 'fail');
   assert.ok(report.checks.every((check) => check.probability === 0.39));
-  assert.ok(updates.some((value) => value.phase === 'selection' && value.running === 4 && value.completedBatches === 0));
+  assert.ok(updates.some((value) => value.phase === 'inventory' && value.running === 4 && value.completedBatches === 0));
   assert.ok(updates.some((value) => value.phase === 'audit' && value.completedBatches === value.totalBatches));
   assert.ok(updates.every((value) => value.running <= value.concurrency && value.completedBatches <= value.totalBatches));
   assert.equal(updates.at(-1)!.phase, 'complete');

@@ -8,7 +8,7 @@ import type { SourceSnapshot } from '../lib/handoff-eval.ts';
 
 async function fixture() {
   const snapshot: SourceSnapshot = { sessionId: 'session-11111111-1111-1111-1111-111111111111', cursor: 4, messages: [{ seq: 1, role: 'user', sourceKind: 'user', text: '保留原会话ID。只生成交接，不自动执行历史命令。' }, { seq: 3, role: 'assistant', sourceKind: 'model', text: '当前实现已完成隔离测试，尚未处理真实业务会话。' }] };
-  const report = await previewHandoff(snapshot, async (_state, questions) => ({ answers: Object.fromEntries(Object.entries(questions).map(([key, question]) => [key, question.type === 'score' ? { score: 3, probabilities: { 0: 0, 1: 0, 2: 0, 3: 1 } } : { probability: key.endsWith('_superseded') ? 0.05 : 0.95 }])) }));
+  const report = await previewHandoff(snapshot, async (_state, questions) => ({ answers: Object.fromEntries(Object.entries(questions).map(([key, question]) => [key, question.type === 'score' ? { score: 3, probabilities: { 0: 0, 1: 0, 2: 0, 3: 1 } } : { probability: key.startsWith('context_') || key.startsWith('resolve_') || key.endsWith('_superseded') ? 0.05 : 0.95 }])) }));
   assert.equal(report.status, 'pass');
   const entry: CachedPreview = { connectionKey: 'private-connection-a', report: { ...report, reportId: randomUUID() } };
   const choice = { modelReportId: entry.report.reportId, sourceHash: report.sourceHash };

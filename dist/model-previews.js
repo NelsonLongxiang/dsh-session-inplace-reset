@@ -3,7 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { evaluateConnection } from "./decision-model.js";
-import { previewHandoff, RUBRIC, SAMPLER, sourceDigest } from "./handoff-eval.js";
+import { previewHandoff, canonicalContinuationGoal, RUBRIC, SAMPLER, sourceDigest } from "./handoff-eval.js";
 import { MAX_EVALUATION_CALLS, MAX_PARALLEL_REQUESTS } from "./handoff-batches.js";
 import { approvedModelHandoff } from "./model-handoff.js";
 import { snapshotFromObservation } from "./source-snapshot.js";
@@ -21,10 +21,11 @@ export function createModelPreviews(ctx, config, loader, settings, evaluate = ev
     const pendingTasks = new Set();
     let active = 0, closing = false;
     const targetBytes = config.handoffTargetKB * 1024;
-    const keyFor = (snapshot, connectionKey) => createHash('sha256').update(JSON.stringify([RUBRIC, SAMPLER, targetBytes, connectionKey, sourceDigest(snapshot)])).digest('hex');
+    const keyFor = (snapshot, connectionKey, goal) => createHash('sha256').update(JSON.stringify([RUBRIC, SAMPLER, targetBytes, goal, connectionKey, sourceDigest(snapshot)])).digest('hex');
     const snapshotOf = (id, observation) => snapshotFromObservation(id, observation, ctx.get('sessions').messageProjections, loader);
     const view = (task) => structuredClone({ sessionId: task.sessionId, taskId: task.taskId, startedAt: task.startedAt, running: task.running, progress: task.progress, ...(task.report ? { report: task.report } : {}), ...(task.error ? { error: task.error } : {}) });
-    const taskFor = async (sessionId) => {
+    const taskFor = async (sessionId, requestedGoal) => {
+        const goal = canonicalContinuationGoal(requestedGoal);
         if (closing)
             throw new Error('插件正在停止，未启动新的评估');
         assertSessionId(sessionId);
@@ -37,7 +38,7 @@ export function createModelPreviews(ctx, config, loader, settings, evaluate = ev
             observation[Symbol.dispose]?.();
         }
         const connection = await settings.connection();
-        const key = keyFor(snapshot, connection.cacheKey);
+        const key = keyFor(snapshot, connection.cacheKey, goal);
         const cached = previews.get(key);
         if (cached && !cached.error && cached.report?.status !== 'unavailable')
             return cached;
@@ -59,7 +60,7 @@ export function createModelPreviews(ctx, config, loader, settings, evaluate = ev
         }
         task.pending = (async () => {
             try {
-                const report = await previewHandoff(snapshot, (state, questions) => closing ? Promise.resolve({ error: '评估请求未完成' }) : evaluate(connection, state, questions), { targetBytes, onProgress: (value) => { task.progress = { ...value, phase: value.phase === 'complete' ? 'aggregation' : value.phase }; } });
+                const report = await previewHandoff(snapshot, (state, questions) => closing ? Promise.resolve({ error: '评估请求未完成' }) : evaluate(connection, state, questions), { targetBytes, continuationGoal: goal, onProgress: (value) => { task.progress = { ...value, phase: value.phase === 'complete' ? 'aggregation' : value.phase }; } });
                 const reportId = randomUUID();
                 const directory = join(reportRoot, `model-${reportId}`);
                 await mkdir(directory, { recursive: true });
@@ -87,7 +88,7 @@ export function createModelPreviews(ctx, config, loader, settings, evaluate = ev
     return {
         clear() { previews.clear(); },
         async dispose() { closing = true; await Promise.allSettled(pendingTasks); },
-        async start(sessionId) { return view(await taskFor(sessionId)); },
+        async start(sessionId, goal) { return view(await taskFor(sessionId, goal)); },
         status(request) {
             assertPreviewTask(request);
             const task = [...previews.values()].find((entry) => entry.taskId === request.taskId && entry.sessionId === request.sessionId);
@@ -99,7 +100,7 @@ export function createModelPreviews(ctx, config, loader, settings, evaluate = ev
         async handoff(sessionId, observation, choice) {
             const snapshot = await snapshotOf(sessionId, observation);
             const connection = await settings.connection();
-            const pending = previews.get(keyFor(snapshot, connection.cacheKey))?.pending;
+            const pending = previews.get(keyFor(snapshot, connection.cacheKey, canonicalContinuationGoal(choice.continuationGoal)))?.pending;
             const entry = pending ? await pending : undefined;
             return approvedModelHandoff(entry, choice, { snapshot, connectionKey: connection.cacheKey, targetBytes, hardCapBytes: config.handoffHardCapKB * 1024 });
         },

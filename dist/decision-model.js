@@ -1,6 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+export function outcome(p) {
+    if (typeof p !== 'number' || !Number.isFinite(p) || p < 0 || p > 1)
+        throw new Error('invalid probability');
+    return p >= 0.7 ? 'pass' : p <= 0.4 ? 'fail' : 'pending';
+}
 export const DEFAULT_API_BASE = 'https://ai-gateway.vercel.sh/v4/ai/evaluation-model';
 export async function legacyConnection() {
     let token = process.env.AI_GATEWAY_API_KEY?.trim();

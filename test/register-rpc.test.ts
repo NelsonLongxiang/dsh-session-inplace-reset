@@ -29,7 +29,7 @@ test('preview contribution uses a real exported module key and removes only its 
   assert.equal(manifest.exports['./preview'], './dist/register-rpc.js');
   await registerSessionRpc(runtime.ctx, artifact());
   const preview = runtime.owners.get(`${artifact().package}/preview`)!;
-  assert.deepEqual(preview.invocations.map((item) => item.method), ['sessionResetDryRun', 'sessionResetExecute', 'sessionResetResume', 'sessionResetModelPreview', 'sessionResetModelPreviewStart', 'sessionResetModelPreviewStatus', 'sessionResetEvaluationSettings', 'sessionResetSaveEvaluationSettings', 'sessionResetRecoveryStatus', 'sessionResetRecoveries', 'sessionResetExecuteModel']);
+  assert.deepEqual(preview.invocations.map((item) => item.method), ['sessionResetDryRun', 'sessionResetExecute', 'sessionResetResume', 'sessionResetModelPreview', 'sessionResetModelPreviewStart', 'sessionResetModelPreviewStartWithGoal', 'sessionResetModelPreviewStatus', 'sessionResetEvaluationSettings', 'sessionResetSaveEvaluationSettings', 'sessionResetRecoveryStatus', 'sessionResetRecoveries', 'sessionResetExecuteModel']);
   runtime.dispose();
   assert.equal(runtime.owners.has(artifact().package), true);
   assert.equal(runtime.owners.has(preview.package), false);
@@ -38,7 +38,7 @@ test('preview contribution uses a real exported module key and removes only its 
 test('cold automatic-loader metadata coexists with all owned RPC endpoints', async () => {
   const runtime = fixture(false);
   await registerSessionRpc(runtime.ctx, artifact());
-  assert.equal(runtime.owners.get(`${artifact().package}/preview`)!.invocations.length, 11);
+  assert.equal(runtime.owners.get(`${artifact().package}/preview`)!.invocations.length, 12);
 });
 
 test('cached base endpoints remain owned by the host while preview activates', async () => {
@@ -99,6 +99,23 @@ test('progress reads use a strict task and session pair and cannot carry a reset
   assert.deepEqual(parameters[0].codec.schema.parse({ ...request, handoff: { arbitrary: true } }), request);
   assert.throws(() => parameters[0].codec.schema.parse({ ...request, taskId: 'invalid' }));
   assert.throws(() => parameters[0].codec.schema.parse({ ...request, sessionId: '../invalid' }));
+});
+
+test('goal-aware starts preserve legacy starts and validate goal and model execution fields', async () => {
+  const runtime = fixture();
+  await registerSessionRpc(runtime.ctx, artifact());
+  const methods = runtime.owners.get(`${artifact().package}/preview`)!.invocations;
+  assert.ok(methods.some((item) => item.method === 'sessionResetModelPreviewStart'));
+  const start = methods.find((item) => item.method === 'sessionResetModelPreviewStartWithGoal')!;
+  const parse = (start.parameters as { codec: { schema: { parse(value: unknown): unknown } } }[])[0].codec.schema.parse;
+  const sessionId = 'session-11111111-1111-1111-1111-111111111111';
+  assert.deepEqual(parse({ sessionId, continuationGoal: ' 继续原任务 ', seed: {} }), { sessionId, continuationGoal: '继续原任务' });
+  assert.throws(() => parse({ sessionId, continuationGoal: null }));
+  assert.throws(() => parse({ sessionId, continuationGoal: 'x'.repeat(2001) }));
+  const execute = methods.find((item) => item.method === 'sessionResetExecuteModel')!;
+  const executeParse = (execute.parameters as { codec: { schema: { parse(value: unknown): unknown } } }[])[0].codec.schema.parse;
+  const request = { sessionId, confirmShortId: '11111111', modelReportId: '22222222-2222-2222-2222-222222222222', sourceHash: 'a'.repeat(64), continuationGoal: '继续原任务' };
+  assert.deepEqual(executeParse(request), request);
 });
 
 test('an existing preview owner is not overwritten', async () => {

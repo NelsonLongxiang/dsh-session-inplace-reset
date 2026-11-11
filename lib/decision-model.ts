@@ -7,6 +7,11 @@ export type Questions = Record<string, Question>;
 export interface Answer { type?: string; probability?: number; score?: number; choice?: string; probabilities?: Record<string, number> }
 export interface Evaluation { answers?: Partial<Record<string, Answer>>; error?: string; usage?: { inputTokens?: number; outputTokens?: number } }
 export type Evaluator = (state: unknown, questions: Questions) => Promise<Evaluation>;
+export type Outcome = 'pass' | 'fail' | 'pending';
+export function outcome(p: unknown): Outcome {
+  if (typeof p !== 'number' || !Number.isFinite(p) || p < 0 || p > 1) throw new Error('invalid probability');
+  return p >= 0.7 ? 'pass' : p <= 0.4 ? 'fail' : 'pending';
+}
 
 export interface EvaluationConnection { apiBase: string; apiKey: string }
 export const DEFAULT_API_BASE = 'https://ai-gateway.vercel.sh/v4/ai/evaluation-model';

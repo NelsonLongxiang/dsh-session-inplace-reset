@@ -13,7 +13,7 @@ test('the real HTTP evaluation client sends at most four concurrent requests and
     const input = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { questions: Questions };
     active++; calls++; peak = Math.max(peak, active);
     await new Promise((resolve) => setTimeout(resolve, 25));
-    const answers = Object.fromEntries(Object.entries(input.questions).map(([key, question]) => [key, question.type === 'score' ? { score: 3, probabilities: { 0: 0, 1: 0, 2: 0, 3: 1 } } : { probability: key.endsWith('_superseded') ? 0.05 : 0.95 }]));
+    const answers = Object.fromEntries(Object.entries(input.questions).map(([key, question]) => [key, question.type === 'score' ? { score: 3, probabilities: { 0: 0, 1: 0, 2: 0, 3: 1 } } : { probability: key.startsWith('context_') || key.startsWith('resolve_') || key.endsWith('_superseded') ? 0.05 : 0.95 }]));
     active--;
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ answers }));

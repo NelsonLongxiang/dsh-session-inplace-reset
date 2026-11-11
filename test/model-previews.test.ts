@@ -7,7 +7,7 @@ import { createModelPreviews } from '../lib/model-previews.ts';
 import type { Evaluation, Questions } from '../lib/decision-model.ts';
 
 const id = 'session-11111111-1111-1111-1111-111111111111';
-const answers = (questions: Questions): Evaluation => ({ answers: Object.fromEntries(Object.entries(questions).map(([key, question]) => [key, question.type === 'score' ? { score: 3, probabilities: { 0: 0, 1: 0, 2: 0, 3: 1 } } : { probability: key.endsWith('_superseded') ? 0.05 : 0.95 }])) });
+const answers = (questions: Questions): Evaluation => ({ answers: Object.fromEntries(Object.entries(questions).map(([key, question]) => [key, question.type === 'score' ? { score: 3, probabilities: { 0: 0, 1: 0, 2: 0, 3: 1 } } : { probability: key.startsWith('context_') || key.startsWith('resolve_') || key.endsWith('_superseded') ? 0.05 : 0.95 }])) });
 async function fixture(evaluate?: (state: unknown, questions: Questions) => Promise<Evaluation>) {
   const root = await mkdtemp(join(tmpdir(), 'model-previews-'));
   const module = join(root, 'host-session-fixture.mjs');
@@ -25,13 +25,34 @@ test('cached previews preserve identity, expose no private connection, and execu
   const f = await fixture();
   const first = await f.models.preview(id), second = await f.models.preview(id);
   assert.equal(first.reportId, second.reportId);
-  assert.equal(f.requests(), 2);
+  assert.equal(f.requests(), 3);
   assert.doesNotMatch(JSON.stringify(first), /not-a-real-secret|private-connection-a/);
   const disk = await readFile(join(f.root, `model-${first.reportId}/result.json`), 'utf8');
   assert.doesNotMatch(disk, /not-a-real-secret|private-connection-a/);
   const seed = await f.models.handoff(id, f.observation(), { modelReportId: first.reportId, sourceHash: first.sourceHash });
   assert.deepEqual(seed, first.handoff);
-  assert.equal(f.requests(), 2);
+  assert.equal(f.requests(), 3);
+});
+
+test('explicit goals isolate cached tasks and changing the goal invalidates the selected handoff', async () => {
+  const f = await fixture();
+  const first = await f.models.start(id, '继续任务A');
+  let a = first;
+  for (let i = 0; a.running && i < 1000; i++) { await new Promise((resolve) => setTimeout(resolve, 2)); a = f.models.status({ sessionId: id, taskId: first.taskId }); }
+  assert.equal(a.running, false);
+  const second = await f.models.start(id, '继续任务B');
+  let b = second;
+  for (let i = 0; b.running && i < 1000; i++) { await new Promise((resolve) => setTimeout(resolve, 2)); b = f.models.status({ sessionId: id, taskId: second.taskId }); }
+  assert.equal(b.running, false);
+  assert.notEqual(a.taskId, b.taskId);
+  assert.equal(a.report!.sourceHash, b.report!.sourceHash);
+  assert.equal(a.report!.continuation!.goal, '继续任务A');
+  assert.equal((await f.models.start(id, '继续任务A')).taskId, a.taskId);
+  const choice = { modelReportId: a.report!.reportId, sourceHash: a.report!.sourceHash, continuationGoal: '继续任务A' };
+  await f.models.handoff(id, f.observation(), choice);
+  await assert.rejects(f.models.handoff(id, f.observation(), { ...choice, continuationGoal: '继续任务B' }));
+  await assert.rejects(f.models.handoff(id, f.observation(), { modelReportId: choice.modelReportId, sourceHash: choice.sourceHash }));
+  assert.equal(f.requests(), 6);
 });
 
 test('source changes, connection changes and cache clearing refuse an old report without re-evaluating', async () => {
@@ -46,7 +67,7 @@ test('source changes, connection changes and cache clearing refuse an old report
   f.connect('private-connection-a');
   f.models.clear();
   await assert.rejects(f.models.handoff(id, f.observation(), choice), /失效/);
-  assert.equal(f.requests(), 2);
+  assert.equal(f.requests(), 3);
 });
 
 test('start and polling share one live task and expose safe, isolated progress before completion', async () => {
@@ -60,7 +81,7 @@ test('start and polling share one live task and expose safe, isolated progress b
   const first = await f.models.start(id), second = await f.models.start(id);
   assert.equal(first.taskId, second.taskId);
   assert.equal(first.running, true);
-  assert.equal(first.progress.phase, 'selection');
+  assert.equal(first.progress.phase, 'inventory');
   assert.equal(first.progress.running, 4);
   assert.equal(first.progress.completedBatches, 0);
   assert.equal(f.requests(), 4);
@@ -111,10 +132,10 @@ test('running tasks survive cache eviction and reopening does not start duplicat
   for (let i = 1; i <= 8; i++) { f.change(`独立的新约束${i}`); await f.models.preview(id); }
   f.change('保留原ID；不得自动执行历史命令。', 0);
   assert.equal((await f.models.start(id)).taskId, task.taskId);
-  assert.equal(f.requests(), 17);
+  assert.equal(f.requests(), 25);
   gate.resolve();
   assert.equal((await f.models.preview(id)).status, 'pass');
-  assert.equal(f.requests(), 18);
+  assert.equal(f.requests(), 27);
 });
 
 test('unloading drains requests even after clearing cache and schedules no new provider work', async () => {
@@ -139,5 +160,5 @@ test('the bounded in-memory cache cannot revive an evicted report from its saved
   for (let i = 1; i <= 8; i++) { f.change(`新的约束 ${i}`); await f.models.preview(id); }
   f.change('保留原ID；不得自动执行历史命令。', 0);
   await assert.rejects(f.models.handoff(id, f.observation(), { modelReportId: first.reportId, sourceHash: first.sourceHash }), /失效/);
-  assert.equal(f.requests(), 18);
+  assert.equal(f.requests(), 27);
 });

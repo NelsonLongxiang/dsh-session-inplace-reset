@@ -6,7 +6,7 @@ import type { Questions, Evaluation } from '../lib/decision-model.ts';
 
 const message = (seq: number, role: string, text: string): SourceMessage => ({ seq, role, sourceKind: role === 'assistant' ? 'model' : role, text });
 const source = (messages: SourceMessage[]): SourceSnapshot => ({ sessionId: 'session-11111111-1111-1111-1111-111111111111', cursor: 99, messages });
-const answer = (questions: Questions, { pending = false, audit = 0.95 } = {}): Evaluation => ({ answers: Object.fromEntries(Object.entries(questions).map(([key, question]) => [key, question.type === 'score' ? { score: pending ? 1.5 : 2.8, probabilities: pending ? { 0: 0, 1: 0.5, 2: 0.5, 3: 0 } : { 0: 0, 1: 0, 2: 0.2, 3: 0.8 } } : { probability: key.endsWith('_superseded') ? 0.05 : audit }])) });
+const answer = (questions: Questions, { pending = false, audit = 0.95 } = {}): Evaluation => ({ answers: Object.fromEntries(Object.entries(questions).map(([key, question]) => [key, question.type === 'score' ? { score: pending ? 1.5 : 2.8, probabilities: pending ? { 0: 0, 1: 0.5, 2: 0.5, 3: 0 } : { 0: 0, 1: 0, 2: 0.2, 3: 0.8 } } : { probability: key.startsWith('context_') || key.startsWith('resolve_') || key.endsWith('_superseded') ? 0.05 : audit }])) });
 
 test('probability boundaries use pending and reject invalid values', () => {
   assert.equal(outcome(0.4), 'fail');
@@ -61,26 +61,25 @@ test('selection is extractive, audited against all supplied candidates, and cann
   let calls = 0;
   const result = await previewHandoff(snapshot, async (state, questions) => {
     calls++;
-    if (calls === 2) {
+    if ('constraints' in questions) {
       const cut = state as { candidates: unknown[]; candidate_handoff: { selected_messages: unknown[] } };
       assert.equal(cut.candidates.length, 2);
       assert.equal(cut.candidate_handoff.selected_messages.length, 2);
     }
     return answer(questions);
   });
-  assert.equal(calls, 2);
+  assert.equal(calls, 3);
   assert.equal(result.status, 'pass');
   assert.equal(result.applied, false);
   assert.equal(result.mode, 'shadow');
   assert.deepEqual(result.selected.map((item) => item.text), snapshot.messages.map((item) => item.text));
   assert.equal(JSON.stringify(snapshot), original);
-  assert.equal(result.handoff!.version, 3);
+  assert.equal(result.handoff!.version, 4);
   assert.ok(result.handoff!.selected_messages.every((row) => !('score' in row) && !('retention' in row) && !('superseded' in row)), 'Original excerpts must not carry model verdicts into the conversation');
 });
 
 test('pending selections are retained without labelling the package approved', async () => {
-  let count = 0;
-  const result = await previewHandoff(source([message(0, 'user', '疑义应保留原文')]), async (_state, questions) => answer(questions, { pending: ++count === 1 }));
+  const result = await previewHandoff(source([message(0, 'user', '疑义应保留原文')]), async (_state, questions) => answer(questions, { pending: Object.values(questions).some((question) => question.type === 'score') }));
   assert.equal(result.status, 'pending');
   assert.equal(result.selected.length, 1);
 });
@@ -108,11 +107,11 @@ test('one conservative repair restores omitted original context without changing
   let calls = 0;
   const result = await previewHandoff(source([message(0, 'user', '保留ID，下一步保存交接'), message(1, 'assistant', 'fixture ready')]), async (_state, questions) => {
     calls++;
-    const value = answer(questions, { audit: calls === 2 ? 0.59 : 0.95 });
-    if (calls === 1) value.answers!.c1_importance = { score: 0.8, probabilities: { 0: 0.7, 1: 0.2, 2: 0.08, 3: 0.02 } };
+    const value = answer(questions, { audit: calls === 3 ? 0.59 : 0.95 });
+    if ('c1_importance' in questions) value.answers!.c1_importance = { score: 0.8, probabilities: { 0: 0.7, 1: 0.2, 2: 0.08, 3: 0.02 } };
     return value;
   });
-  assert.equal(calls, 3);
+  assert.equal(calls, 4);
   assert.equal(result.strategy, 'conservative');
   assert.equal(result.selected.length, 2);
   assert.equal(result.selected[1].retention, 'fail', 'The original model score must not be relabelled pass');
@@ -125,10 +124,10 @@ test('conservative repair stops after one changed candidate and a remaining gray
   const result = await previewHandoff(source([message(0, 'user', '有效约束'), message(1, 'assistant', '完成提示')]), async (_state, questions) => {
     calls++;
     const value = answer(questions, { audit: 0.59 });
-    if (calls === 1) value.answers!.c1_importance = { score: 0.8, probabilities: { 0: 0.7, 1: 0.2, 2: 0.08, 3: 0.02 } };
+    if ('c1_importance' in questions) value.answers!.c1_importance = { score: 0.8, probabilities: { 0: 0.7, 1: 0.2, 2: 0.08, 3: 0.02 } };
     return value;
   });
-  assert.equal(calls, 3);
+  assert.equal(calls, 4);
   assert.equal(result.auditAttempts!.length, 2);
   assert.equal(result.status, 'pending');
 });
