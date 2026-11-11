@@ -2,6 +2,8 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createRequire } from 'node:module';
 import { createModelPreviews } from "./model-previews.js";
+import { createTopicPreviews } from "./topic-previews.js";
+import { sessionModel } from "./session-model.js";
 import { assertModelChoice } from "./model-handoff.js";
 import { observedAgentPreset } from "./agent-preset.js";
 import { createEvaluationSettings } from "./evaluation-settings.js";
@@ -72,6 +74,9 @@ export async function apply(ctx, config) {
     let modelPreviews;
     const evaluationSettings = createEvaluationSettings(ctx.get('credentials'), ctx.profileContext?.name ?? 'default', () => modelPreviews?.clear());
     modelPreviews = createModelPreviews(ctx, config, hostRequire, evaluationSettings);
+    const topicPreviews = createTopicPreviews(ctx, hostRequire);
+    ctx.effect(() => () => topicPreviews.dispose(), 'session-reset: topic workers');
+    ctx.on('llm/adapters-updated', () => topicPreviews.clear());
     ctx.effect(() => () => modelPreviews.dispose(), 'session-reset: preview workers');
     ctx.effect(() => () => lifecycle.dispose(), 'session-reset: lifecycle guards');
     const methods = {
@@ -86,7 +91,12 @@ export async function apply(ctx, config) {
                 const handoff = buildHandoff(observation.events, { ...config, k: config.defaultK });
                 const pending = recoveryStatus(home, sessionId);
                 const eligibility = pending.operations.length || pending.issues.length ? { canReset: false, blockedReason: '存在未完成或不可校验的事务，请先核对恢复记录' } : lifecycle.inspect(sessionId);
-                return { ok: true, sessionId, ...sessionMetrics(observation.events), agentPreset: observedAgentPreset(observation) ?? null, ...eligibility, size: Buffer.byteLength(JSON.stringify(handoff)), k: handoff.k, messages: handoff.recent_messages.length };
+                let topicModel;
+                try {
+                    topicModel = sessionModel(observation, ctx.get('agentDefaultModel'));
+                }
+                catch { /* Model analysis availability does not block ordinary reset previews. */ }
+                return { ok: true, sessionId, ...sessionMetrics(observation.events), topicModel, agentPreset: observedAgentPreset(observation) ?? null, ...eligibility, size: Buffer.byteLength(JSON.stringify(handoff)), k: handoff.k, messages: handoff.recent_messages.length };
             }
             finally {
                 observation[Symbol.dispose]?.();
@@ -105,6 +115,8 @@ export async function apply(ctx, config) {
             return modelPreviews.start(request.sessionId, request.continuationGoal);
         },
         async sessionResetModelPreviewStatus(request) { return modelPreviews.status(request); },
+        async sessionResetTopicPreviewStart(sessionId) { return topicPreviews.start(sessionId); },
+        async sessionResetTopicPreviewStatus(request) { return topicPreviews.status(request); },
         async sessionResetExecute(request) {
             return executeReset(ctx, ledger, lifecycle, home, request, { ...config, buildHandoff });
         },

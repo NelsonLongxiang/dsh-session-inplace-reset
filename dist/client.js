@@ -14,6 +14,8 @@ window.__ModuleLoader__.load({
     const errorMessage = (reason         ) => reason instanceof Error ? reason.message : String(reason);
     const previewPhases                                                       = { preparing: '准备材料', inventory: '梳理全局任务', resolution: '核对任务闭环与撤销', selection: '并行筛选', audit: '并行核对', repair: '保守候选复核', aggregation: '汇总结果', complete: '评估结束' };
     const contextSummary = (report             ) => ({ goal: report.continuation?.goal ?? '', task: report.continuation?.entries.filter((entry) => entry.kinds.includes('task')).length ?? 0, constraint: report.continuation?.entries.filter((entry) => entry.kinds.includes('constraint')).length ?? 0, change: report.continuation?.entries.filter((entry) => entry.kinds.includes('change')).length ?? 0 });
+    const topicPhases = { preparing: '读取会话模型', topics: '分析候选主题', merging: '汇总主题', complete: '主题分析结束' };
+    const modelLabel = (value                       ) => `${value.provider} / ${value.model}${value.reasoningEffort ? ` · ${value.reasoningEffort}` : ''}`;
     const checkLabels                         = { constraints: '目标与约束', state: '任务状态与纠正', faithful: '角色、来源与事实边界' };
 
     async function rpc         (method        , args        , signal              )             {
@@ -51,14 +53,57 @@ window.__ModuleLoader__.load({
       const [modelError, setModelError] = React.useState               (null);
       const [modelTask, setModelTask] = React.useState                        (null);
       const modelRequest = React.useRef                        (null);
+      const [topicTask, setTopicTask] = React.useState                      (null);
+      const [topicLoading, setTopicLoading] = React.useState(false);
+      const [topicError, setTopicError] = React.useState               (null);
+      const topicRequest = React.useRef                        (null);
       const [recovery, setRecovery] = React.useState                     (null);
       const [recoveryAttempt, setRecoveryAttempt] = React.useState(0);
       const [recoveryError, setRecoveryError] = React.useState               (null);
       const [recovering, setRecovering] = React.useState(false);
       const recoveryReady = !!recovery && !recovery.operations.length && !recovery.issues.length;
-      React.useEffect(() => () => modelRequest.current?.abort(), []);
+      React.useEffect(() => () => { modelRequest.current?.abort(); topicRequest.current?.abort(); }, []);
       const shortId = sessionId.slice(8, 16);
       const close = () => { if (!executing && !recovering) onClose(); };
+      const useGoal = (value        ) => { setContinuationGoal(value); setModel(null); setSelectedModel(null); setModelTask(null); setConfirmText(''); };
+      const acceptTopics = (value               , taskId         ) => {
+        const p = value?.progress;
+        if (value?.sessionId !== sessionId || taskId && value.taskId !== taskId || !/^[a-f0-9-]{36}$/i.test(value.taskId ?? '') || typeof value.running !== 'boolean' || !value.model || typeof value.model.provider !== 'string' || !value.model.provider || typeof value.model.model !== 'string' || !value.model.model || !['session', 'default'].includes(value.modelSource) || !p || !Object.hasOwn(topicPhases, p.phase) || !(['completedBatches', 'totalBatches', 'running', 'concurrency', 'requests']         ).every((key) => Number.isSafeInteger(p[key]) && p[key] >= 0) || p.completedBatches > p.totalBatches || p.running > p.concurrency || p.concurrency < 1 || p.concurrency > 4) throw new Error('主题分析数据不完整或不属于所选会话');
+        if (value.error) throw new Error(value.error);
+        const report = value.report;
+        if (report && (report.sessionId !== sessionId || !/^[a-f0-9]{64}$/.test(report.sourceHash) || !['ready', 'unavailable'].includes(report.status) || !Array.isArray(report.topics) || report.topics.length > 3 || !report.topics.every((topic) => typeof topic.id === 'string' && typeof topic.title === 'string' && typeof topic.goal === 'string' && topic.goal.length <= 2000 && Array.isArray(topic.evidence) && topic.evidence.length > 0 && topic.evidence.every((item) => typeof item.quote === 'string' && Number.isSafeInteger(item.seq))) || !Number.isSafeInteger(report.coverage?.assessed) || !Number.isSafeInteger(report.coverage?.total) || report.coverage.assessed < 0 || report.coverage.assessed > report.coverage.total)) throw new Error('候选主题或引用来源不可校验');
+        return value;
+      };
+      const previewTopics = async () => {
+        if (!dry || executing || recovering || modelLoading || topicLoading) return;
+        const controller = new AbortController(); topicRequest.current = controller;
+        setTopicLoading(true); setTopicError(null); setTopicTask(null); setConfirmText('');
+        try {
+          let task = acceptTopics(await rpc               ('sessionResetTopicPreviewStart', { sessionId }, controller.signal));
+          const taskId = task.taskId;
+          if (!controller.signal.aborted) setTopicTask(task);
+          while (task.running) {
+            await new Promise((resolve) => setTimeout(resolve, 800));
+            if (controller.signal.aborted) return;
+            task = acceptTopics(await rpc               ('sessionResetTopicPreviewStatus', { request: { sessionId, taskId } }, controller.signal), taskId);
+            if (!controller.signal.aborted) setTopicTask(task);
+          }
+          if (!task.report) throw new Error('未收到完整的主题分析');
+        } catch (reason) { if (!controller.signal.aborted) setTopicError(errorMessage(reason)); }
+        finally { if (!controller.signal.aborted) setTopicLoading(false); }
+      };
+      const chooseTopic = async (topicId        ) => {
+        if (!topicTask || topicLoading || modelLoading || executing || recovering) return;
+        const controller = new AbortController(); topicRequest.current = controller;
+        setTopicLoading(true); setTopicError(null);
+        try {
+          const value = acceptTopics(await rpc               ('sessionResetTopicPreviewStatus', { request: { sessionId, taskId: topicTask.taskId } }, controller.signal), topicTask.taskId);
+          const topic = value.report?.status === 'ready' ? value.report.topics.find((item) => item.id === topicId) : undefined;
+          if (!topic || value.running) throw new Error('候选主题已变化，请重新分析');
+          if (!controller.signal.aborted) { setTopicTask(value); useGoal(topic.goal); }
+        } catch (reason) { if (!controller.signal.aborted) setTopicError(errorMessage(reason)); }
+        finally { if (!controller.signal.aborted) setTopicLoading(false); }
+      };
 
       React.useEffect(() => {
         if (completed || recoveryOnly) { setLoading(false); return; }
@@ -101,7 +146,7 @@ window.__ModuleLoader__.load({
         return () => controller.abort();
       }, [sessionId, recoveryAttempt]);
       const recover = async (operationId        ) => {
-        if (executing || recovering || modelLoading || confirmText.trim() !== shortId) return;
+        if (executing || recovering || modelLoading || topicLoading || confirmText.trim() !== shortId) return;
         setRecovering(true);
         setRecoveryError(null);
         try {
@@ -117,7 +162,7 @@ window.__ModuleLoader__.load({
       };
 
       const previewModel = async () => {
-        if (!dry || executing || recovering || modelLoading) return;
+        if (!dry || executing || recovering || modelLoading || topicLoading) return;
         const controller = new AbortController();
         modelRequest.current = controller;
         setModelLoading(true);
@@ -158,7 +203,7 @@ window.__ModuleLoader__.load({
       };
 
       const execute = async () => {
-        if (!dry || dry.canReset === false || !recoveryReady || loading || executing || modelLoading || recovering || confirmText.trim() !== shortId) return;
+        if (!dry || dry.canReset === false || !recoveryReady || loading || executing || modelLoading || topicLoading || recovering || confirmText.trim() !== shortId) return;
         setExecuting(true);
         setError(null);
         try {
@@ -193,12 +238,12 @@ window.__ModuleLoader__.load({
           h(Button, { variant: 'outline', disabled: executing || recovering, onClick: close }, '关闭'),
           !result && !recoveryOnly && h(Button, {
             variant: 'primary',
-            disabled: !dry || dry.canReset === false || !recoveryReady || loading || executing || modelLoading || recovering || confirmText.trim() !== shortId,
+            disabled: !dry || dry.canReset === false || !recoveryReady || loading || executing || modelLoading || topicLoading || recovering || confirmText.trim() !== shortId,
             onClick: execute,
           }, executing ? (selectedModel ? '正在应用候选…' : '正在备份…') : selectedModel ? '应用候选并重置' : '备份并重置'),
         ),
       },
-        h('div', { 'data-inplace-reset-session': sessionId, 'aria-busy': loading || executing || recovering || modelLoading, style: { maxHeight: '65vh', overflowY: 'auto', paddingRight: 4 } },
+        h('div', { 'data-inplace-reset-session': sessionId, 'aria-busy': loading || executing || recovering || modelLoading || topicLoading, style: { maxHeight: '65vh', overflowY: 'auto', paddingRight: 4 } },
           h('p', { style: { marginTop: 0, overflowWrap: 'anywhere' } }, displayTitle || '未命名会话'),
           h('code', { style: { fontSize: 12, overflowWrap: 'anywhere' } }, sessionId),
           loading && h('p', { role: 'status' }, '正在读取该会话的预览…'),
@@ -230,14 +275,35 @@ window.__ModuleLoader__.load({
             recovery.issues.map((issue, index) => h('p', { key: index, role: 'alert' }, issue)),
             recovery.operations.map((operation) => h('div', { key: operation.operationId },
               h('p', null, `操作 ${operation.operationId} · ${operation.createdAt}`),
-              h(Button, { variant: 'outline', disabled: executing || recovering || modelLoading || recovery.operations.length !== 1 || confirmText.trim() !== shortId, onClick: () => recover(operation.operationId) }, recovering ? '正在恢复…' : '恢复原日志'),
+              h(Button, { variant: 'outline', disabled: executing || recovering || modelLoading || topicLoading || recovery.operations.length !== 1 || confirmText.trim() !== shortId, onClick: () => recover(operation.operationId) }, recovering ? '正在恢复…' : '恢复原日志'),
             )),
           ),
           !result && dry && h('div', { 'data-inplace-reset-model': true, style: { margin: '16px 0' } },
+            h('section', { 'data-inplace-reset-topics': true, style: { marginBottom: 16, padding: 12, border: '1px solid var(--dsw-alias-border-l3)', borderRadius: 8 } },
+              h('b', null, '候选续接主题'),
+              (topicTask?.model ?? dry.topicModel?.selection) && h('p', { 'data-inplace-reset-topic-model': true, style: { fontSize: 12, overflowWrap: 'anywhere' } }, `主题分析模型：${modelLabel(topicTask?.model ?? dry.topicModel .selection)}${(topicTask?.modelSource ?? dry.topicModel?.source) === 'default' ? '（会话沿用宿主默认）' : '（本会话已选模型）'}`),
+              h(Button, { variant: 'outline', disabled: loading || executing || recovering || modelLoading || topicLoading, onClick: previewTopics }, topicLoading ? '正在分析主题…' : topicTask?.report ? '检查并更新候选主题' : '使用本会话模型分析主题'),
+              h('p', { style: { fontSize: 12 } }, '先由当前会话模型提出带原文引用的主题，选择后填写下方目标；只做分析，不运行历史命令。'),
+              topicLoading && topicTask && h('div', { 'data-inplace-reset-topic-progress': topicTask.progress.phase, role: 'status', 'aria-live': 'polite' },
+                h('p', null, `${topicPhases[topicTask.progress.phase]} · ${topicTask.progress.completedBatches} / ${topicTask.progress.totalBatches} 批 · 并行 ${topicTask.progress.running} / ${topicTask.progress.concurrency}`),
+                h('progress', { 'aria-label': '候选主题分析进度', max: Math.max(1, topicTask.progress.totalBatches), value: topicTask.progress.totalBatches ? topicTask.progress.completedBatches : undefined, style: { width: '100%' } }),
+              ),
+              topicError && h('p', { role: 'alert' }, topicError),
+              topicTask?.report && h('div', { 'data-inplace-reset-topic-result': topicTask.report.status },
+                h('p', { style: { fontSize: 12 } }, `主题材料 ${topicTask.report.coverage.assessed} / ${topicTask.report.coverage.total} 个片段；使用 ${modelLabel(topicTask.report.model)}`),
+                !topicTask.report.coverage.complete && h('p', null, '部分主题材料未覆盖，候选不代表完整会话主题。'),
+                h('p', { style: { fontSize: 12 } }, topicTask.report.note),
+                topicTask.report.topics.map((topic) => h('article', { key: topic.id, 'data-inplace-reset-topic': topic.id, style: { paddingTop: 10, marginTop: 10, borderTop: '1px solid var(--dsw-alias-border-l3)' } },
+                  h('b', null, topic.title), h('p', null, topic.goal),
+                  h(Button, { variant: 'outline', disabled: topicLoading || modelLoading || executing || recovering, 'aria-pressed': continuationGoal === topic.goal, onClick: () => chooseTopic(topic.id) }, continuationGoal === topic.goal ? '已采用此主题' : '采用此主题'),
+                  h('details', null, h('summary', null, '查看主题原文依据'), topic.evidence.map((item, index) => h('div', { key: index }, h('small', null, `事件 #${item.seq} · ${item.historical ? '历史引用' : item.role}`), h('blockquote', { style: { margin: '6px 0', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 12 } }, item.quote)))),
+                )),
+              ),
+            ),
             h('label', { htmlFor: 'inplace-reset-continuation-goal' }, '续接目标'),
-            h('textarea', { id: 'inplace-reset-continuation-goal', value: continuationGoal, maxLength: 2000, rows: 2, placeholder: '留空：接续全部未完成任务，保留持续约束与有效纠正', disabled: executing || recovering || modelLoading, onChange: (event                                             ) => { setContinuationGoal(event.target.value); setModel(null); setSelectedModel(null); setModelTask(null); setConfirmText(''); }, style: { display: 'block', width: '100%', boxSizing: 'border-box', marginTop: 6, padding: 8, color: 'inherit', background: 'var(--dsw-alias-bg-base)', border: '1px solid var(--dsw-alias-border-l3)', borderRadius: 6 } }),
+            h('textarea', { id: 'inplace-reset-continuation-goal', value: continuationGoal, maxLength: 2000, rows: 2, placeholder: '留空：接续全部未完成任务，保留持续约束与有效纠正', disabled: executing || recovering || modelLoading || topicLoading, onChange: (event                                             ) => useGoal(event.target.value), style: { display: 'block', width: '100%', boxSizing: 'border-box', marginTop: 6, padding: 8, color: 'inherit', background: 'var(--dsw-alias-bg-base)', border: '1px solid var(--dsw-alias-border-l3)', borderRadius: 6 } }),
             h('p', { style: { fontSize: 12 } }, '此目标决定模型筛选范围；其他主题的未完成任务和持续约束也会保留。修改目标后需重新预览，筛选目标不增加操作授权。'),
-            h(Button, { variant: 'outline', disabled: loading || executing || recovering || modelLoading, onClick: previewModel }, modelLoading ? '正在筛选并核对…' : '模型筛选预览'),
+            h(Button, { variant: 'outline', disabled: loading || executing || recovering || modelLoading || topicLoading, onClick: previewModel }, modelLoading ? '正在筛选并核对…' : '模型筛选预览'),
             h('p', { style: { fontSize: 12 } }, '预览先不修改会话。通过检查后可明确选用这份候选；未选择时使用近期采样。'),
             h('p', { style: { fontSize: 12 } }, '先梳理全局清单再并行筛选，最多64批、192次请求；每阶段最多4个请求并行，完成即停止。'),
             modelLoading && !modelTask && h('p', { role: 'status' }, '正在准备材料并拆分批次…'),
@@ -295,7 +361,7 @@ window.__ModuleLoader__.load({
               value: confirmText,
               onChange: (event                                          ) => setConfirmText(event.target.value),
               autoComplete: 'off',
-              disabled: loading || executing || modelLoading || recovering,
+              disabled: loading || executing || modelLoading || topicLoading || recovering,
               style: { display: 'block', width: '100%', boxSizing: 'border-box', marginTop: 6, padding: 8, color: 'inherit', background: 'var(--dsw-alias-bg-base)', border: '1px solid var(--dsw-alias-border-l3)', borderRadius: 6 },
             }),
           ),

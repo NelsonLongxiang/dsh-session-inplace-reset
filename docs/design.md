@@ -22,6 +22,16 @@
 
 每次预览解析一次连接，全部筛选和核对请求共用该连接。后续操作重新解析，连接的私有摘要参与缓存键；保存清空旧缓存。读接口只返回地址、配置状态与可写性。
 
+## 候选主题与会话查询
+
+先提供由该会话当前模型生成的候选主题，再让用户采用或编辑续接目标。`lib/session-model.ts` 从同一观察切片的正式`modelSelection.next`视图读provider/model/reasoningEffort，仅next=null时使用agentDefaultModel；缺失或过期投影拒绝，未知路由不改用其他模型。`ctx.llm.prepareCall()`绑定宿主适配器和配置，单次调用不携带原会话ID、不挂载工具；仅使用完整stop回执的文本，不接纳思考或工具块。
+
+`lib/topic-analysis.ts` 取全部直接用户消息和最近8条助手回复，最多64批并行提取，必要时分层合并，最多96次宿主模型调用。候选标题/目标是生成建议，每条必须带可在输入原文中逐字找到的引用；汇总层只能复用已有引用。原文范围、覆盖、模型和并行峰值随报告保存。不能把该材料覆盖冒充整份会话的语义覆盖。
+
+`lib/topic-previews.ts` 复用定点observeSession及既有消息投影，网络调用前释放lease。模型和源摘要参与8份进程内缓存，最多2份主题任务同时运行；内容/模型变化拒绝旧候选，适配器拓扑变化中止在途主题任务。选择主题只填目标，后续仍由既有Jev筛选/核对和独立确认执行。
+
+已核对用户提供的[SQLite FTS5查询文档](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/session-query/session-query-sqlite/README.zh.md)和本机0.2.1-rc.2类型。该包已随基础组合安装，基础组合openAt=never；全文搜索用于字面token召回，不生成主题，unicode61也不保证中文子串召回。filterEvents/readSurface/readEvent的精确读取会回放完整日志，不在批次间重复调用。保留已有observeSession的精确cut/冷缓存/惰性事件，不另建SQLite、不改索引开关、不把搜索命中当完整历史。未来检索也只通过sessionQuery公共接口并限定目标会话，不打开其派生数据库。
+
 ## 采样预览
 
 从一致的宿主观察切片借用冻结事件，使用正式消息投影得到当前可见文本；网络评估开始前释放观察lease。原始调度流水不进入候选集。
@@ -44,11 +54,13 @@
 
 ## 接口与客户端
 
-`lib/remote-service.ts` 使用宿主自己的 `TypertRemoteService` 挂载插件拥有的 `sessionReset` 服务，不再给 `workspaceRegistry` 添加方法或依赖残留绑定。当前接口为 `/api/sessionReset/<method>`，方法名保持 `sessionResetDryRun`、`sessionResetExecute`、`sessionResetResume`、`sessionResetModelPreview`、`sessionResetEvaluationSettings`、`sessionResetSaveEvaluationSettings`、`sessionResetRecoveryStatus`、`sessionResetRecoveries`，独立的 `sessionResetExecuteModel`，以及只读任务入口 `sessionResetModelPreviewStart` / `sessionResetModelPreviewStartWithGoal` / `sessionResetModelPreviewStatus`。
+`lib/remote-service.ts` 使用宿主自己的 `TypertRemoteService` 挂载插件拥有的 `sessionReset` 服务，不再给 `workspaceRegistry` 添加方法或依赖残留绑定。当前接口为 `/api/sessionReset/<method>`，方法名保持 `sessionResetDryRun`、`sessionResetExecute`、`sessionResetResume`、`sessionResetModelPreview`、`sessionResetEvaluationSettings`、`sessionResetSaveEvaluationSettings`、`sessionResetRecoveryStatus`、`sessionResetRecoveries`，独立的 `sessionResetExecuteModel`，以及只读任务入口 `sessionResetModelPreviewStart` / `sessionResetModelPreviewStartWithGoal` / `sessionResetModelPreviewStatus`，以及候选主题任务入口 `sessionResetTopicPreviewStart` / `sessionResetTopicPreviewStatus`。
 
 宿主自动TYPERT loader按包名长期缓存基础接口清单。当前自动入口只发布空清单，本包已导出的 `/preview` 子模块贡献拥有上述接口。旧版缓存的 `workspaceRegistry` 贡献保持原拥有者，新命名空间与之并存；卸载仅移除自己的服务和贡献，不重载全局缓存。
 
 `src/client.ts` 是浏览器单一源码；`tools/build-client.ts` 生成 `lib/client.js`，`tools/build-package.ts` 将所有发行入口编译到 `dist/*.js` 并改写 `.ts` 相对导入。普通 `node_modules` 安装不再依赖 Node 类型擦除。
+
+续接目标输入前展示候选主题、实际分析模型和引用。采用时重新核对主题任务所属会话与当前模型/游标，只填目标并清空旧候选及确认。没有自动启动付费主题分析，普通打开预览仍只读取；用户点击分析后按所选会话模型正常产生用量。
 
 续接目标输入属于模型预览范围；改变目标清除旧候选、报告和确认。报告展示生效目标、全局任务/约束/纠正数量及逐条原文/来源，闭环状态明确标成推断。
 

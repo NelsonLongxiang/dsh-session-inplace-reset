@@ -30,6 +30,9 @@ let simulatedExecute = null;
 let simulatedModel = null;
 let simulatedTask = null;
 let wrongProgressSession = false;
+let simulatedTopics = false;
+let simulatedTopicTask = null;
+let staleTopic = false;
 const realModelAllowed = process.argv.includes('--model-preview') || process.argv.includes('--use-model');
 const evaluationSettingsMode = process.argv.includes('--evaluation-settings');
 const recoveryMode = process.argv.includes('--recovery-list');
@@ -38,6 +41,8 @@ let savedEvaluationSettings = null;
 const settingsWrites = [];
 const executionOption = process.argv.indexOf('--execute-test-session');
 const permittedExecutionId = executionOption === -1 ? null : process.argv[executionOption + 1];
+const topicOption = process.argv.indexOf('--topics-session');
+const permittedTopicId = topicOption < 0 ? null : process.argv[topicOption + 1];
 
 function send(method, params = {}, timeout = 15_000) {
   const id = ++nextId;
@@ -80,6 +85,19 @@ socket.addEventListener('message', ({ data }) => {
       void send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'content-type', value: 'application/json' }], body: Buffer.from(response).toString('base64') });
     } else if (body.method.endsWith('/sessionResetEvaluationSettings') && savedEvaluationSettings) {
       const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: true, value: savedEvaluationSettings } });
+      void send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'content-type', value: 'application/json' }], body: Buffer.from(response).toString('base64') });
+    } else if (body.method.endsWith('/sessionResetTopicPreviewStart') && simulatedTopics) {
+      simulatedTopicTask = { taskId: crypto.randomUUID(), sessionId: body.payload.args.sessionId, startedAt: new Date().toISOString(), model: { provider: 'session-fixture-provider', model: 'current-session-model', reasoningEffort: 'high' }, modelSource: 'session', progress: { phase: 'topics', completedBatches: 0, totalBatches: 2, running: 2, concurrency: 4, requests: 2 } };
+      const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: true, value: { ...simulatedTopicTask, running: true } } });
+      void send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'content-type', value: 'application/json' }], body: Buffer.from(response).toString('base64') });
+    } else if (body.method.endsWith('/sessionResetTopicPreviewStatus') && simulatedTopicTask?.taskId === body.payload.args.request?.taskId) {
+      const value = { ...simulatedTopicTask, running: false, progress: { ...simulatedTopicTask.progress, phase: 'complete', completedBatches: 2, running: 0 }, ...(staleTopic ? { error: '会话内容或模型已变化，请重新分析候选主题' } : { report: { sessionId: simulatedTopicTask.sessionId, cursor: 2, sourceHash: 'b'.repeat(64), model: simulatedTopicTask.model, modelSource: 'session', status: 'ready', note: '浏览器模拟主题；原文引用仅用于UI验收。', coverage: { total: 2, assessed: 2, complete: true, materialMessages: 2, sourceMessages: 10 }, requests: 2, peakConcurrency: 2, topics: [{ id: 'topic-1', title: '上下文重置与主题分析', goal: '继续实现上下文重置与候选主题分析', evidence: [{ id: 'c0', seq: 0, role: 'user', historical: false, quote: '继续实现上下文重置' }] }, { id: 'topic-2', title: '库存差异核对', goal: '继续库存差异核对并保留业务边界', evidence: [{ id: 'c1', seq: 1, role: 'user', historical: false, quote: '库存差异仍待核对' }] }] } }) };
+      const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: true, value } });
+      void send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'content-type', value: 'application/json' }], body: Buffer.from(response).toString('base64') });
+    } else if (/\/sessionResetTopicPreview/.test(body.method) && permittedTopicId && (body.payload.args.sessionId ?? body.payload.args.request?.sessionId) === permittedTopicId) {
+      void send('Fetch.continueRequest', { requestId });
+    } else if (/\/sessionResetTopicPreview/.test(body.method)) {
+      const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: false, error: { message: 'Browser test blocked an unexpected paid topic analysis' } } });
       void send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'content-type', value: 'application/json' }], body: Buffer.from(response).toString('base64') });
     } else if (/\/sessionResetModelPreviewStart(?:WithGoal)?$/.test(body.method) && simulatedModel) {
       const input = body.payload.args.request ?? body.payload.args;
@@ -177,7 +195,7 @@ try {
   assert.equal(await evaluate(`document.body.innerText.includes('authentication required')`), false, 'The specified shared CDP browser must already be authenticated; its login state was not changed');
   await until(`document.querySelectorAll('[data-row-key^="session:"]').length >= 2`, 'two session rows', 40_000);
   assert.equal(await evaluate(`document.body.innerText.includes('Failed to load plugins')`), false);
-  await send('Fetch.enable', { patterns: [{ urlPattern: '*sessionReset/sessionResetEvaluationSettings', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetSaveEvaluationSettings', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetDryRun', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetModelPreview*', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetExecute', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetExecuteModel', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetRecoveries', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetRecoveryStatus', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetResume', requestStage: 'Request' }] });
+  await send('Fetch.enable', { patterns: [{ urlPattern: '*sessionReset/sessionResetEvaluationSettings', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetSaveEvaluationSettings', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetDryRun', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetTopicPreview*', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetModelPreview*', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetExecute', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetExecuteModel', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetRecoveries', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetRecoveryStatus', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetResume', requestStage: 'Request' }] });
   const testOption = executionOption;
   const restoreOption = process.argv.indexOf('--restore-operation');
   if (recoveryMode) {
@@ -236,6 +254,27 @@ try {
     const value = await evaluate(`(async () => { const rpcId = crypto.randomUUID(); const response = await fetch('/api/sessionReset/sessionResetModelPreview', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'client-request', rpcId, method: 'sessionReset/sessionResetModelPreview', payload: { args: { sessionId: 'invalid' } } }) }); return { status: response.status, body: await response.text() }; })()`);
     await writeFile(join(out, 'probe.json'), JSON.stringify(value, null, 2));
     console.log(JSON.stringify(value));
+  } else if (topicOption >= 0) {
+    assert.match(permittedTopicId, /^session-[a-f0-9-]{36}$/);
+    await ensureRowVisible(permittedTopicId);
+    assert.equal(await evaluate(`document.querySelector('[data-row-key="session:${permittedTopicId}"]')?.innerText.includes('[reset-test]')`), true, 'Live topic UI verification uses a labelled test source');
+    await openPreview(permittedTopicId);
+    await until(`!!document.querySelector('[data-inplace-reset-stats]')`, 'topic source baseline');
+    const before = await evaluate(`document.querySelector('[data-inplace-reset-stats]').textContent`);
+    await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(button => button.textContent === '使用本会话模型分析主题').click()`);
+    await until(`document.querySelectorAll('[data-inplace-reset-topic]').length > 0 || !!document.querySelector('[data-inplace-reset-topics] [role="alert"]')`, 'real session-model topics', 160000);
+    assert.equal(await evaluate(`document.querySelector('[data-inplace-reset-topics] [role="alert"]')?.textContent`), undefined);
+    const badge = await evaluate(`document.querySelector('[data-inplace-reset-topic-model]').textContent`);
+    await evaluate(`document.querySelector('[data-inplace-reset-topic] details').open = true; document.querySelector('[data-inplace-reset-topics]').scrollIntoView({ block: 'start' })`);
+    const screenshot = await send('Page.captureScreenshot', { format: 'png' });
+    await writeFile(join(out, 'real-session-model-topics.png'), Buffer.from(screenshot.data, 'base64'));
+    await evaluate(`document.querySelector('[data-inplace-reset-topic] button').click()`);
+    await until(`document.getElementById('inplace-reset-continuation-goal').value.length > 0`, 'real topic adopted into goal');
+    assert.equal(await evaluate(`document.getElementById('inplace-reset-confirm').value`), '');
+    assert.equal(await evaluate(`document.querySelector('[data-inplace-reset-stats]').textContent`), before);
+    assert.equal(requests.some((request) => /\/sessionResetExecute(?:Model)?$/.test(request.method)), false);
+    await writeFile(join(out, 'result.json'), JSON.stringify({ sessionId: permittedTopicId, badge, requests, checks: ['real session-model candidates shown', 'grounded quote visible', 'adoption only fills editable goal', 'confirmation remains empty', 'source statistics unchanged', 'no reset requested'] }, null, 2), { flag: 'wx' });
+    console.log(`PASS real session-model topic UI: ${badge}; evidence: ${out}`);
   } else if (process.argv.includes('--model-preview')) {
     await evaluate(`document.querySelectorAll('button').forEach(button => { if (/^展开其余 \\d+ 个会话$|^Show \\d+ more sessions$/.test(button.textContent.trim())) button.click(); })`);
     await until(`[...document.querySelectorAll('[data-row-key^="session:"]')].some(row => row.innerText.includes('[reset-test]'))`, 'labelled test session after expanding the list', 5_000);
@@ -381,6 +420,29 @@ try {
     await closePreview();
   }
   evidence.checks.push('two distinct row IDs passed through to read-only RPC', 'inactive row menu does not switch active conversation', 'dialog persists after menu closes', 'fresh confirmation for each row', 'preset roster defaults to preserving the source preset', 'changing preset clears prior confirmation');
+
+  simulatedTopics = true;
+  await openPreview(second.id);
+  await until(`document.querySelector('[data-inplace-reset-stats]')?.textContent`, 'baseline before topic suggestions');
+  await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(button => button.textContent === '使用本会话模型分析主题').click()`);
+  await until(`document.querySelectorAll('[data-inplace-reset-topic]').length === 2`, 'session-model topic candidates');
+  const topicBadge = await evaluate(`document.querySelector('[data-inplace-reset-topic-model]').textContent`);
+  assert.match(topicBadge, /session-fixture-provider \/ current-session-model · high/);
+  await evaluate(`(() => { const input = document.getElementById('inplace-reset-confirm'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(second.id.slice(8, 16))}); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await evaluate(`document.querySelector('[data-inplace-reset-topic="topic-1"] button').click()`);
+  await until(`document.getElementById('inplace-reset-continuation-goal').value === '继续实现上下文重置与候选主题分析'`, 'topic selection fills editable continuation goal');
+  assert.equal(await evaluate(`document.getElementById('inplace-reset-confirm').value`), '');
+  assert.equal(await evaluate(`!!document.querySelector('[data-inplace-reset-selected-model]')`), false);
+  assert.equal(requests.some((request) => /\/sessionResetExecute(?:Model)?$/.test(request.method)), false);
+  await evaluate(`document.querySelector('[data-inplace-reset-topic="topic-1"] details').open = true; document.querySelector('[data-inplace-reset-topics]').scrollIntoView({ block: 'start' })`);
+  const topicShot = await send('Page.captureScreenshot', { format: 'png' });
+  await writeFile(join(out, 'session-model-topics.png'), Buffer.from(topicShot.data, 'base64'));
+  staleTopic = true;
+  await evaluate(`document.querySelector('[data-inplace-reset-topic="topic-2"] button').click()`);
+  await until(`document.querySelector('[data-inplace-reset-topics] [role="alert"]')?.textContent.includes('模型已变化')`, 'stale topic refused before adoption');
+  assert.equal(await evaluate(`document.getElementById('inplace-reset-continuation-goal').value`), '继续实现上下文重置与候选主题分析');
+  await closePreview(); simulatedTopics = false; staleTopic = false;
+  evidence.checks.push('session model and reasoning effort shown for topic analysis', 'candidates show source quotes before choosing a goal', 'adopting a topic only fills the goal and clears confirmation', 'stale source or model refuses an old topic');
 
   for (const status of ['pass', 'pending', 'fail', 'unavailable']) {
     await openPreview(second.id);

@@ -29,7 +29,7 @@ test('preview contribution uses a real exported module key and removes only its 
   assert.equal(manifest.exports['./preview'], './dist/register-rpc.js');
   await registerSessionRpc(runtime.ctx, artifact());
   const preview = runtime.owners.get(`${artifact().package}/preview`)!;
-  assert.deepEqual(preview.invocations.map((item) => item.method), ['sessionResetDryRun', 'sessionResetExecute', 'sessionResetResume', 'sessionResetModelPreview', 'sessionResetModelPreviewStart', 'sessionResetModelPreviewStartWithGoal', 'sessionResetModelPreviewStatus', 'sessionResetEvaluationSettings', 'sessionResetSaveEvaluationSettings', 'sessionResetRecoveryStatus', 'sessionResetRecoveries', 'sessionResetExecuteModel']);
+  assert.deepEqual(preview.invocations.map((item) => item.method), ['sessionResetDryRun', 'sessionResetExecute', 'sessionResetResume', 'sessionResetModelPreview', 'sessionResetModelPreviewStart', 'sessionResetModelPreviewStartWithGoal', 'sessionResetModelPreviewStatus', 'sessionResetTopicPreviewStart', 'sessionResetTopicPreviewStatus', 'sessionResetEvaluationSettings', 'sessionResetSaveEvaluationSettings', 'sessionResetRecoveryStatus', 'sessionResetRecoveries', 'sessionResetExecuteModel']);
   runtime.dispose();
   assert.equal(runtime.owners.has(artifact().package), true);
   assert.equal(runtime.owners.has(preview.package), false);
@@ -38,7 +38,7 @@ test('preview contribution uses a real exported module key and removes only its 
 test('cold automatic-loader metadata coexists with all owned RPC endpoints', async () => {
   const runtime = fixture(false);
   await registerSessionRpc(runtime.ctx, artifact());
-  assert.equal(runtime.owners.get(`${artifact().package}/preview`)!.invocations.length, 12);
+  assert.equal(runtime.owners.get(`${artifact().package}/preview`)!.invocations.length, 14);
 });
 
 test('cached base endpoints remain owned by the host while preview activates', async () => {
@@ -116,6 +116,17 @@ test('goal-aware starts preserve legacy starts and validate goal and model execu
   const executeParse = (execute.parameters as { codec: { schema: { parse(value: unknown): unknown } } }[])[0].codec.schema.parse;
   const request = { sessionId, confirmShortId: '11111111', modelReportId: '22222222-2222-2222-2222-222222222222', sourceHash: 'a'.repeat(64), continuationGoal: '继续原任务' };
   assert.deepEqual(executeParse(request), request);
+});
+
+test('topic suggestions have source-scoped endpoints and cannot accept caller-selected routes', async () => {
+  const runtime = fixture();
+  await registerSessionRpc(runtime.ctx, artifact());
+  const methods = runtime.owners.get(`${artifact().package}/preview`)!.invocations;
+  assert.ok(methods.some((item) => item.method === 'sessionResetTopicPreviewStart'));
+  const status = methods.find((item) => item.method === 'sessionResetTopicPreviewStatus')!;
+  const parse = (status.parameters as { codec: { schema: { parse(value: unknown): unknown } } }[])[0].codec.schema.parse;
+  const request = { sessionId: 'session-11111111-1111-1111-1111-111111111111', taskId: '22222222-2222-2222-2222-222222222222' };
+  assert.deepEqual(parse({ ...request, provider: 'untrusted', model: 'other-model' }), request);
 });
 
 test('an existing preview owner is not overwritten', async () => {

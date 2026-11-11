@@ -27,6 +27,8 @@ export async function registerSessionRpc(ctx, artifact) {
         schema: { parse(value) { assertPreviewTask(value); return { sessionId: value.sessionId, taskId: value.taskId }; } },
     };
     const progress = { ...start, id: `${packageKey}#sessionReset/sessionResetModelPreviewStatus`, method: 'sessionResetModelPreviewStatus', parameters: [{ name: 'request', wire: 'request', source: 'json', codec: progressCodec }] };
+    const topicStart = { ...start, id: `${packageKey}#sessionReset/sessionResetTopicPreviewStart`, method: 'sessionResetTopicPreviewStart', result: { ...dry.result, typeSymbol: `${packageKey}/types#TopicTaskView` } };
+    const topicStatus = { ...progress, id: `${packageKey}#sessionReset/sessionResetTopicPreviewStatus`, method: 'sessionResetTopicPreviewStatus', result: topicStart.result };
     const saveCodec = {
         mode: 'strict', typeSymbol: `${packageKey}/types#EvaluationSettingsWrite`,
         create: () => saveCodec.schema,
@@ -60,6 +62,6 @@ export async function registerSessionRpc(ctx, artifact) {
     };
     const modelExecute = { ...dry, id: `${packageKey}#sessionReset/sessionResetExecuteModel`, method: 'sessionResetExecuteModel', parameters: [{ name: 'request', wire: 'request', source: 'json', codec: modelRequestCodec }], result: { ...dry.result, typeSymbol: `${packageKey}/types#ExecuteValue` } };
     const base = artifact.invocations.filter((item) => ['sessionResetDryRun', 'sessionResetExecute', 'sessionResetResume'].includes(item.method)).map((item) => ({ ...item, id: `${packageKey}#sessionReset/${item.method}` }));
-    const manifest = { ...artifact, package: packageKey, schemas: [], invocations: [...base, preview, start, goalStart, progress, read, save, recovery, recoveries, modelExecute] };
+    const manifest = { ...artifact, package: packageKey, schemas: [], invocations: [...base, preview, start, goalStart, progress, topicStart, topicStatus, read, save, recovery, recoveries, modelExecute] };
     ctx.effect(() => ctx.get('typert').register(manifest), 'session-reset: owned RPC');
 }

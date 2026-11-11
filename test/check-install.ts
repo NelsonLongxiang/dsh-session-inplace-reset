@@ -58,7 +58,7 @@ async function start() {
     await writeFile(join(evidence, `closed-process-${processId}.json`), JSON.stringify({ pid: child.pid, exited: true, exitCode: child.exitCode, signal: child.signalCode }), { flag: 'wx' });
   };
   try {
-    const deadline = Date.now() + 30000;
+    const deadline = Date.now() + 60000;
     let url: string | undefined;
     while (Date.now() < deadline) {
       url = output.match(/http:\/\/127\.0\.0\.1:\d+\/?\?token=[A-Za-z0-9_-]+/)?.[0];
@@ -126,6 +126,17 @@ try {
   }
   assert.equal(goalView.running, false);
   assert.equal(goalView.report.continuation.goal, '仅验证显式续接目标，不执行历史命令');
+  const topicTask = await first.call('sessionReset/sessionResetTopicPreviewStart', { sessionId: source.sessionId });
+  let topics = topicTask;
+  for (let i = 0; i < 100 && topics.running; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    topics = await first.call('sessionReset/sessionResetTopicPreviewStatus', { request: { sessionId: source.sessionId, taskId: topicTask.taskId } });
+  }
+  assert.equal(topics.running, false);
+  assert.equal(topics.error, undefined);
+  assert.equal(topics.report.status, 'ready');
+  assert.equal(topics.report.requests, 0, 'The empty isolated source must not send a paid model request');
+  assert.equal(topics.report.topics.length, 0);
   const projections = await first.call('session/projections', { request: { sessionId: source.sessionId } });
   assert.equal(projections.kind, 'sequenced');
   const backup = await first.call('session/fork', { request: { sessionId: source.sessionId, atSeq: projections.asOfSeq } });
@@ -152,7 +163,7 @@ try {
   assert.equal(persisted.hasSavedKey, true);
   assert.ok(!JSON.stringify(persisted).includes(expectedKey));
   assert.equal(await credentialHash(), realCredentialsBefore, 'Real user credential storage changed');
-  await writeFile(join(evidence, 'result.json'), JSON.stringify({ package: metadata.name, version: metadata.version, installedPath: resolved, isolatedHome: home, sourceVisibleBeforeRecovery, recoveryOperationId: interrupted.manifest.operationId, checks: ['normal offline package installation', 'compiled package active in real DSH', 'new typed endpoints available', 'task start and progress available after cold boot', 'explicit goal survives typed RPC and isolates the preview task', 'native credential save returns no secret', 'native credential persisted across isolated restart', 'interrupted real DSH session recovered through RPC', 'restored filesystem fingerprints match original', 'real credentials unchanged', 'live DSH not stopped'] }, null, 2), { flag: 'wx' });
+  await writeFile(join(evidence, 'result.json'), JSON.stringify({ package: metadata.name, version: metadata.version, installedPath: resolved, isolatedHome: home, sourceVisibleBeforeRecovery, recoveryOperationId: interrupted.manifest.operationId, checks: ['normal offline package installation', 'compiled package active in real DSH', 'new typed endpoints available', 'task start and progress available after cold boot', 'explicit goal survives typed RPC and isolates the preview task', 'topic endpoints use session model metadata without a paid call for an empty source', 'native credential save returns no secret', 'native credential persisted across isolated restart', 'interrupted real DSH session recovered through RPC', 'restored filesystem fingerprints match original', 'real credentials unchanged', 'live DSH not stopped'] }, null, 2), { flag: 'wx' });
   console.log(`PASS package install, native credential persistence and same-ID recovery; evidence: ${evidence}`);
 } finally {
   await first?.stop(); await second?.stop();

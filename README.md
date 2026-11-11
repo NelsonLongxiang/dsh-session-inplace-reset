@@ -4,7 +4,7 @@
 
 正式仓库：[NelsonLongxiang/dsh-session-inplace-reset](https://github.com/NelsonLongxiang/dsh-session-inplace-reset)。
 
-当前版本 **0.9.0**，已验证宿主为 **DSH 0.2.1-rc.2 / Cordis 4.0.5 / Node 24**。单会话释放使用有边界的宿主适配；不匹配的运行时形状会拒绝操作。
+当前版本 **0.10.0**，已验证宿主为 **DSH 0.2.1-rc.2 / Cordis 4.0.5 / Node 24**。单会话释放使用有边界的宿主适配；不匹配的运行时形状会拒绝操作。
 
 ## 使用
 
@@ -26,7 +26,7 @@
 git clone https://github.com/NelsonLongxiang/dsh-session-inplace-reset.git
 cd dsh-session-inplace-reset
 npm pack --ignore-scripts
-dsh plugin --profile web add ./local-dsh-session-inplace-reset-0.9.0.tgz --save-exact
+dsh plugin --profile web add ./local-dsh-session-inplace-reset-0.10.0.tgz --save-exact
 ```
 
 上述打包使用已提交产物。修改源码后按下方开发流程重新生成，再打包；不要只复制 `.ts` 文件作为发行入口。
@@ -54,6 +54,12 @@ dsh plugin --profile web add ./local-dsh-session-inplace-reset-0.9.0.tgz --save-
 ## 模型筛选预览
 
 重置弹窗中的 **模型筛选预览** 先生成候选，不触发重置、不自动填写确认 ID。
+
+可以先点击 **使用本会话模型分析主题**，获得1–3个带原文依据的候选。主题分析读取该会话 `modelSelection.next`，包含尚未发起请求的模型切换和思考强度；只有会话未指定模型时，才按宿主语义沿用当前默认。界面标明实际使用的provider/model/思考强度，无需另配Key。
+
+主题材料由全部直接用户消息与最近8条助手回复组成，展开旧交接并脱敏；不把工具调度流水作为主题材料。长材料最多64批、同阶段4并发，先提取再分层汇总；引用必须逐字存在，汇总只能复用输入已有引用。输出只是候选，不能作为任务完成或操作授权的依据。模型调用通过宿主LLM服务，不提示原Agent、不挂工具、不向原会话写消息；中断、截断、工具请求或不可核验引用均不显示可用候选，也不改用其他模型。
+
+点击 **采用此主题** 将目标填入可编辑输入框，并清除旧候选与确认。采用前重新核对源游标和模型；历史或模型变化时要求重新分析。未变的来源/模型复用进程内分析，关闭弹窗仅停止前端轮询，后台会继续。后续点击 **模型筛选预览** 才进入既有评估模型的全局清单和质量核对，两者用途分别显示。
 
 评估先建立共享的续接依据：**续接目标**可填写，留空明确采用“接续全部未完成任务，保留持续约束、授权边界与有效纠正”。目标是筛选范围，不授予新的操作权限。改变目标会清除旧报告、候选选择和确认短ID，缓存及执行也绑定目标。
 
@@ -96,12 +102,12 @@ node test/browser-menu.mjs --evaluation-settings
 node test/check-live-reset.mjs --inspect-only
 ```
 
-默认浏览器检查模拟重置、模型响应与分阶段进度，检查实际并行数、无障碍进度条、关闭后的轮询清理和错误任务隔离。设置页检查执行真实安全读取，凭证写入回执被模拟，不替换现有真实 Key。
+默认浏览器检查模拟重置、主题分析、评估响应与分阶段进度，检查实际并行数、无障碍进度条、关闭后的轮询清理和错误任务隔离。设置页检查执行真实安全读取，凭证写入回执被模拟，不替换现有真实 Key。
 
 显式检查：
 
 ```sh
-node test/check-install.ts --launcher /path/to/dsh/lib/bin.js --archive /path/to/local-dsh-session-inplace-reset-0.9.0.tgz
+node test/check-install.ts --launcher /path/to/dsh/lib/bin.js --archive /path/to/local-dsh-session-inplace-reset-0.10.0.tgz
 ```
 
 此检查复用已有 DSH 安装，在独立 `DSH_HOME` 中离线安装发行包、使用随机 loopback 端口启动隔离实例，验证旧预览入口和显式目标新入口的兼容性、原生凭证持久化和真实会话文件的中断恢复。只停止自己创建的隔离进程，不操作当前服务；凭证测试只使用虚构 Key。
@@ -110,6 +116,8 @@ node test/check-install.ts --launcher /path/to/dsh/lib/bin.js --archive /path/to
 node test/browser-menu.mjs --model-preview
 node test/check-model-preview.ts --live --heldout
 node test/check-continuation.ts --live
+node test/check-topics.ts --live --session <explicitly-authorized-source>
+node test/browser-menu.mjs --topics-session <labelled-test-source>
 node test/check-live-reset.mjs --reload-only
 node test/check-live-reset.mjs --prepare-model-preview
 node test/check-live-reset.mjs --run
