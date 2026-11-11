@@ -4,13 +4,14 @@ import type { EvaluationSettingsView } from '../lib/evaluation-settings.ts';
 
 import type { recoveryStatus, listRecoveryStatus } from '../lib/reset-journal.ts';
 
-type Complete = { ok: true; phase: 'DONE'; verified: true; sameId: true; sessionId: string; before: { totalTurns: number; totalEvents: number }; after: { totalTurns: number; totalEvents: number }; forkId?: string; operationId?: string; auditWarning?: string; handoffMode?: 'model' | 'recent'; modelReportId?: string; modelSourceHash?: string };
+type Complete = { ok: true; phase: 'DONE'; verified: true; sameId: true; sessionId: string; before: { totalTurns: number; totalEvents: number }; after: { totalTurns: number; totalEvents: number; agentPreset?: string | null }; forkId?: string; operationId?: string; auditWarning?: string; handoffMode?: 'model' | 'recent'; modelReportId?: string; modelSourceHash?: string };
 type Recovered = { ok: true; phase: 'RECOVERED'; verified: true; sameId: true; sessionId: string; operationId: string; after?: { totalTurns: number; totalEvents: number }; auditWarning?: string };
 type RecoveryView = ReturnType<typeof recoveryStatus> & { warnings: string[] };
 type RecoveryIndexView = ReturnType<typeof listRecoveryStatus> & { warnings: string[] };
 type Success = Complete | Recovered;
 type Result = Success | { phase: 'NOT_RESET'; note: string; forkId?: string };
-type DryRun = { sessionId: string; totalTurns: number; totalEvents: number; messages: number; size: number; k: number; canReset?: boolean; blockedReason?: string };
+type AgentPresetRow = { id: string; name?: string; description?: string; isDefault: boolean; broken?: string };
+type DryRun = { agentPreset?: string | null; sessionId: string; totalTurns: number; totalEvents: number; messages: number; size: number; k: number; canReset?: boolean; blockedReason?: string };
 type DialogTarget = { sessionId: string; displayTitle?: string; completed?: Success; recoveryOnly?: true };
 type OverlayTarget = DialogTarget | { kind: 'recoveries' };
 type DialogProps = DialogTarget & { onClose: () => void };
@@ -34,7 +35,7 @@ window.__ModuleLoader__.load({
     const checkLabels: Record<string, string> = { constraints: '目标与约束', state: '任务状态与纠正', faithful: '角色、来源与事实边界' };
 
     async function rpc<T = any>(method: string, args: object, signal?: AbortSignal): Promise<T> {
-      const endpoint = `sessionReset/${method}`;
+      const endpoint = method.includes('/') ? method : `sessionReset/${method}`;
       const rpcId = crypto.randomUUID();
       const response = await fetch(`/api/${endpoint}`, {
         method: 'POST',
@@ -57,6 +58,10 @@ window.__ModuleLoader__.load({
       const [error, setError] = React.useState<string | null>(null);
       const [confirmText, setConfirmText] = React.useState('');
       const [attempt, setAttempt] = React.useState(0);
+      const [presets, setPresets] = React.useState<AgentPresetRow[] | null>(null);
+      const [presetError, setPresetError] = React.useState<string | null>(null);
+      const [agentPreset, setAgentPreset] = React.useState('');
+      const [presetAttempt, setPresetAttempt] = React.useState(0);
       const [model, setModel] = React.useState<ModelReport | null>(null);
       const [selectedModel, setSelectedModel] = React.useState<ModelReport | null>(null);
       const [modelLoading, setModelLoading] = React.useState(false);
@@ -89,6 +94,17 @@ window.__ModuleLoader__.load({
         });
         return () => controller.abort();
       }, [sessionId, attempt, recoveryOnly, completed]);
+
+      React.useEffect(() => {
+        if (completed || recoveryOnly) return;
+        const controller = new AbortController();
+        setPresetError(null);
+        rpc<{ presets: AgentPresetRow[] }>('agentPresets/list', {}, controller.signal).then((value) => {
+          if (!Array.isArray(value?.presets) || !value.presets.every((row) => typeof row.id === 'string' && !!row.id && typeof row.isDefault === 'boolean' && (row.name === undefined || typeof row.name === 'string') && (row.broken === undefined || typeof row.broken === 'string'))) throw new Error('Agent预设列表不可校验');
+          if (!controller.signal.aborted) setPresets(value.presets);
+        }).catch((reason) => { if (!controller.signal.aborted) setPresetError(errorMessage(reason)); });
+        return () => controller.abort();
+      }, [sessionId, presetAttempt, recoveryOnly, completed]);
 
       React.useEffect(() => {
         if (completed) return;
@@ -143,9 +159,9 @@ window.__ModuleLoader__.load({
         setError(null);
         try {
           const value = await rpc(selectedModel ? 'sessionResetExecuteModel' : 'sessionResetExecute', {
-            request: { sessionId, confirmShortId: confirmText.trim(), ...(selectedModel ? { modelReportId: selectedModel.reportId, sourceHash: selectedModel.sourceHash } : {}) },
+            request: { sessionId, confirmShortId: confirmText.trim(), ...(agentPreset ? { agentPreset } : {}), ...(selectedModel ? { modelReportId: selectedModel.reportId, sourceHash: selectedModel.sourceHash } : {}) },
           });
-          if (!isSuccess(value, sessionId) || value.phase !== 'DONE' || selectedModel && (value.handoffMode !== 'model' || value.modelReportId !== selectedModel.reportId || value.modelSourceHash !== selectedModel.sourceHash)) {
+          if (!isSuccess(value, sessionId) || value.phase !== 'DONE' || agentPreset && value.after?.agentPreset !== agentPreset || selectedModel && (value.handoffMode !== 'model' || value.modelReportId !== selectedModel.reportId || value.modelSourceHash !== selectedModel.sourceHash)) {
             setResult({ phase: 'NOT_RESET', note: value?.reason ?? value?.note ?? '未收到重置成功的读回校验，不能判定完成', forkId: value?.forkId });
             return;
           }
@@ -191,6 +207,16 @@ window.__ModuleLoader__.load({
             h('div', null, `交接包大小：${((selectedModel?.size ?? dry.size) / 1024).toFixed(1)} KB`),
             h('div', null, selectedModel ? `已选模型候选 ${selectedModel.selected.length} 个片段；新日志收敛为 1 轮交接记录` : `交接包最多采样 ${dry.k} 轮；新日志收敛为 1 轮交接记录`),
             dry.canReset === false && h('p', { role: 'alert' }, `当前不可重置：${dry.blockedReason}`),
+          ),
+          !result && !recoveryOnly && dry && h('section', { 'data-inplace-reset-preset': true, style: { margin: '16px 0' } },
+            h('label', { htmlFor: 'inplace-reset-agent-preset' }, '重生后的 Agent 预设'),
+            h('select', { id: 'inplace-reset-agent-preset', value: agentPreset, disabled: executing || recovering || modelLoading || !presets, onChange: (event: ReactTypes.ChangeEvent<HTMLSelectElement>) => { setAgentPreset(event.target.value); setConfirmText(''); }, style: { display: 'block', width: '100%', marginTop: 6, padding: 8, color: 'inherit', background: 'var(--dsw-alias-bg-base)', border: '1px solid var(--dsw-alias-border-l3)', borderRadius: 6 } },
+              h('option', { value: '' }, `沿用原预设${dry.agentPreset ? `（${presets?.find((row) => row.id === dry.agentPreset)?.name ?? dry.agentPreset}）` : '（原会话未指定，使用宿主默认）'}`),
+              presets?.map((row) => h('option', { key: row.id, value: row.id, disabled: row.broken !== undefined }, `${row.name ?? row.id}${row.name && row.name !== row.id ? ` (${row.id})` : ''}${row.isDefault ? ' · 默认' : ''}${row.broken !== undefined ? ' · 不可用' : ''}`)),
+            ),
+            h('p', { style: { fontSize: 12 } }, '预设决定重生后的工具和工作方式。历史备份保留原预设，失败恢复原会话。'),
+            agentPreset && h('p', { 'data-inplace-reset-preset-choice': agentPreset }, `已选择：${presets?.find((row) => row.id === agentPreset)?.name ?? agentPreset}`),
+            presetError && h(React.Fragment, null, h('p', { role: 'alert' }, `预设列表读取失败：${presetError}。可继续沿用原预设。`), h(Button, { variant: 'outline', onClick: () => setPresetAttempt((value) => value + 1) }, '重读预设列表')),
           ),
           recoveryError && h('p', { role: 'alert', 'data-reset-recovery-error': true }, recoveryError),
           recovery && (recovery.operations.length > 0 || recovery.issues.length > 0 || recovery.warnings.length > 0) && h('section', { 'data-reset-recovery': true },
@@ -247,6 +273,7 @@ window.__ModuleLoader__.load({
             result.phase === 'NOT_RESET' && h('p', null, result.note),
             result.phase !== 'NOT_RESET' && result.auditWarning && h('p', { role: 'alert' }, result.auditWarning),
             result.phase === 'DONE' && result.handoffMode === 'model' && h('p', { 'data-inplace-reset-applied-model': result.modelReportId }, `交接来源：模型候选 ${result.modelReportId}`),
+            result.phase === 'DONE' && result.after.agentPreset && h('p', { 'data-inplace-reset-after-preset': result.after.agentPreset }, `重生后的 Agent 预设：${result.after.agentPreset}`),
             result.phase === 'DONE' && result.forkId && h('p', { style: { overflowWrap: 'anywhere' } }, `历史备份：${result.forkId}`),
           ),
         ),

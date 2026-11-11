@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { runBackupPhase } from './backup.js';
 import { assertSessionId } from "./session-id.js";
 import { ResetJournal, recoveryStatus } from "./reset-journal.js";
+import { observedAgentPreset, optionalAgentPreset, resetAgentPreset } from "./agent-preset.js";
 const message = (error) => error instanceof Error ? error.message : String(error);
 export function sessionMetrics(events) {
     return { totalEvents: events.length, totalTurns: events.filter((event) => event.type === 'turn/start').length };
@@ -10,7 +11,7 @@ async function measure(ctx, id) {
     const observation = await ctx.sessionQuery.observeSession(id);
     try {
         const stored = await ctx.get('sessionPersistence').stat(id);
-        return { ...sessionMetrics(observation.events), sizeBytes: stored?.sizeBytes ?? null, sessionId: observation.header.id };
+        return { ...sessionMetrics(observation.events), sizeBytes: stored?.sizeBytes ?? null, sessionId: observation.header.id, agentPreset: observedAgentPreset(observation) ?? null };
     }
     finally {
         observation[Symbol.dispose]?.();
@@ -31,6 +32,7 @@ function history(ledger, row) {
 }
 export async function executeReset(ctx, ledger, lifecycle, home, request, cfg) {
     confirm(request);
+    const requestedPreset = optionalAgentPreset(request.agentPreset);
     const { sessionId, k = cfg.defaultK } = request;
     if (!Number.isSafeInteger(k) || k < 4 || k > 32)
         throw new Error('保留轮数须为4–32');
@@ -46,7 +48,9 @@ export async function executeReset(ctx, ledger, lifecycle, home, request, cfg) {
         const before = await measure(ctx, sessionId);
         if (!before.totalTurns)
             throw new Error('该会话没有对话轮次，无需重置');
-        record('PREFLIGHT', 'RUNNING', { before });
+        const registry = ctx.get('agentPresets');
+        const agentPreset = await resetAgentPreset(registry, requestedPreset, before.agentPreset ?? undefined);
+        record('PREFLIGHT', 'RUNNING', { before, agentPreset: agentPreset ?? null });
         try {
             await lease.release();
         }
@@ -59,12 +63,14 @@ export async function executeReset(ctx, ledger, lifecycle, home, request, cfg) {
         try {
             backup = await runBackupPhase(ctx, ledger, sessionId, { ...cfg, operationId, home, k });
             await lifecycle.run(backup.forkId, (forkLease) => forkLease.release());
+            if (registry)
+                await resetAgentPreset(registry, agentPreset, undefined);
             journal = await ResetJournal.create(home, sessionId, operationId, backup.forkId);
             await journal.quarantineOriginal();
             record('QUARANTINE', 'RUNNING', { quarantine: journal.quarantine, forkId: backup.forkId });
             journal.record('rebuilding');
             const controller = ctx.get('sessionController');
-            const created = await controller.create({ sessionId, cwd: backup.header.cwd, ...(backup.header.agentPreset ? { agentPreset: backup.header.agentPreset } : {}) });
+            const created = await controller.create({ sessionId, cwd: backup.header.cwd, ...(agentPreset ? { agentPreset } : {}) });
             if (created.sessionId !== sessionId)
                 throw new Error('宿主未以原ID创建会话');
             const agent = ctx.get('agents').get(sessionId);
@@ -84,6 +90,8 @@ export async function executeReset(ctx, ledger, lifecycle, home, request, cfg) {
             const reader = await ctx.get('sessionPersistence').open(sessionId, 'read');
             try {
                 const saved = await reader.read(0);
+                if (agentPreset !== undefined && (observedAgentPreset({ header: reader.header, events: saved.events }) !== agentPreset || after.agentPreset !== agentPreset))
+                    throw new Error('重生后的Agent预设与选择不一致，未通过读回校验');
                 if (after.sessionId !== sessionId || after.totalTurns !== 1 || !saved.events.some((event) => event.type === 'user/message' && event.data.content?.some((part) => part.text === text)))
                     throw new Error('重置后的独立读回校验失败');
                 if (saved.events.some((event) => event.type.startsWith('tool/ptc-dispatch')))

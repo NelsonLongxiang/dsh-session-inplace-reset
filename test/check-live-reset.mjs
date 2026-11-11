@@ -13,6 +13,9 @@ const verifyIndex = process.argv.indexOf('--verify-existing');
 const reloadOnly = process.argv.includes('--reload-only');
 const prepareModel = process.argv.includes('--prepare-model-preview');
 const inspectOnly = process.argv.includes('--inspect-only');
+const presetIndex = process.argv.indexOf('--agent-preset');
+const requestedPreset = presetIndex < 0 ? undefined : process.argv[presetIndex + 1];
+if (presetIndex >= 0) assert.ok(requestedPreset && /^[a-zA-Z0-9_.-]+$/.test(requestedPreset));
 if (!process.argv.includes('--run') && verifyIndex === -1 && !reloadOnly && !prepareModel && !inspectOnly) throw new Error('Pass --run, --verify-existing <result.json>, --reload-only, --inspect-only, or --prepare-model-preview');
 const prior = verifyIndex === -1 ? null : JSON.parse(await readFile(process.argv[verifyIndex + 1], 'utf8'));
 const repo = packageRoot;
@@ -75,9 +78,10 @@ try {
   await call('session/rename', { request: { sessionId: target.sessionId, title: '[reset-test] live lifecycle drill' } });
   const dry = await call('sessionReset/sessionResetDryRun', { sessionId: target.sessionId });
   evidence.before = dry;
+  if (requestedPreset) evidence.requestedPreset = requestedPreset;
   assert.ok(Number.isInteger(dry.totalTurns), 'New host code was not activated');
   assert.equal(dry.canReset, true, dry.blockedReason);
-  const browser = spawnSync(process.execPath, [join(repo, 'test/browser-menu.mjs'), '--execute-test-session', target.sessionId], { cwd: repo, encoding: 'utf8', timeout: 100_000 });
+  const browser = spawnSync(process.execPath, [join(repo, 'test/browser-menu.mjs'), '--execute-test-session', target.sessionId, ...(requestedPreset ? ['--agent-preset', requestedPreset] : [])], { cwd: repo, encoding: 'utf8', timeout: 100_000 });
   console.log(browser.stdout);
   assert.equal(browser.status, 0, browser.stderr);
   }
@@ -88,13 +92,14 @@ try {
   const after = await call('sessionReset/sessionResetDryRun', { sessionId: targetId });
   evidence.after = after;
   assert.equal(after.totalTurns, 1);
+  if (evidence.requestedPreset) assert.equal(after.agentPreset, evidence.requestedPreset);
   assert.ok(after.totalEvents < dry.totalEvents);
   const list = await call('session/list', { _request: {} });
   if (evidence.sourceSessionId) assert.ok(list.items.find((item) => item.sessionId === evidence.sourceSessionId), 'Source conversation disappeared');
   else evidence.checks.push('source-presence check NOT_RUN: legacy evidence has no source identity');
   const guard = list.items.find((item) => item.sessionId === evidence.guardianId);
   assert.ok(guard?.agentAvailable && !guard.running, 'Unrelated live agent changed');
-  evidence.checks.push('plugin hot reload without DSH restart', 'already-live fork reset through real menu', 'persisted turn count is one', 'event count reduced', 'serving PID unchanged', 'unrelated live agent remains attached');
+  evidence.checks.push('plugin hot reload without DSH restart', 'already-live fork reset through real menu', 'persisted turn count is one', 'event count reduced', 'serving PID unchanged', 'unrelated live agent remains attached', ...(evidence.requestedPreset ? ['selected rebirth preset independently read back'] : []));
   console.log(`PASS live reset: ${dry.totalTurns} → ${after.totalTurns} turns; ${dry.totalEvents} → ${after.totalEvents} events; PID ${beforePid} unchanged`);
   }
 } catch (error) {

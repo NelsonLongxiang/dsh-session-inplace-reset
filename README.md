@@ -4,11 +4,13 @@
 
 正式仓库：[NelsonLongxiang/dsh-session-inplace-reset](https://github.com/NelsonLongxiang/dsh-session-inplace-reset)。
 
-当前版本 **0.6.0**，已验证宿主为 **DSH 0.2.1-rc.2 / Cordis 4.0.5 / Node 24**。单会话释放使用有边界的宿主适配；不匹配的运行时形状会拒绝操作。
+当前版本 **0.7.0**，已验证宿主为 **DSH 0.2.1-rc.2 / Cordis 4.0.5 / Node 24**。单会话释放使用有边界的宿主适配；不匹配的运行时形状会拒绝操作。
 
 ## 使用
 
 在左侧会话行选择 **⋯ → 原地重置…**。预览绑定该行的完整会话 ID，输入八位短 ID 后才允许执行。
+
+**重生后的 Agent 预设** 默认沿用原会话，也可从宿主当前预设列表选择另一个。列表标明默认项和不可用项；更改选择会清空已输入的确认短ID。近期采样与模型候选两种重置均支持此选择。执行前校验可用性，完成后独立读回预设ID；备份保留原预设，失败恢复原会话。
 
 - 运行中、有后台活动或不能确认生命周期拥有者时，存储修改前停止。
 - 备份按完整事件前缀独立读回核验，不以压缩大小或事件数相近判断完整性。
@@ -24,7 +26,7 @@
 git clone https://github.com/NelsonLongxiang/dsh-session-inplace-reset.git
 cd dsh-session-inplace-reset
 npm pack --ignore-scripts
-dsh plugin --profile web add ./local-dsh-session-inplace-reset-0.6.0.tgz --save-exact
+dsh plugin --profile web add ./local-dsh-session-inplace-reset-0.7.0.tgz --save-exact
 ```
 
 上述打包使用已提交产物。修改源码后按下方开发流程重新生成，再打包；不要只复制 `.ts` 文件作为发行入口。
@@ -89,7 +91,7 @@ node test/check-live-reset.mjs --inspect-only
 显式检查：
 
 ```sh
-node test/check-install.ts --launcher /path/to/dsh/lib/bin.js --archive /path/to/local-dsh-session-inplace-reset-0.6.0.tgz
+node test/check-install.ts --launcher /path/to/dsh/lib/bin.js --archive /path/to/local-dsh-session-inplace-reset-0.7.0.tgz
 ```
 
 此检查复用已有 DSH 安装，在独立 `DSH_HOME` 中离线安装发行包、使用随机 loopback 端口启动隔离实例，验证原生凭证持久化和真实会话文件的中断恢复。只停止自己创建的隔离进程，不操作当前服务；凭证测试只使用虚构 Key。
@@ -100,6 +102,7 @@ node test/check-model-preview.ts --live --heldout
 node test/check-live-reset.mjs --reload-only
 node test/check-live-reset.mjs --prepare-model-preview
 node test/check-live-reset.mjs --run
+node test/check-live-reset.mjs --run --agent-preset minimal
 node test/check-model-apply.ts --run
 node test/check-model-apply.ts --resume /path/to/model-apply-run
 node test/check-model-coverage.ts --live --session <configured-test-source> --baseline /path/to/old-report.json

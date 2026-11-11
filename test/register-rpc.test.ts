@@ -84,6 +84,9 @@ test('model execution has a distinct endpoint and cannot accept an unbound seed'
   const parameters = model.parameters as { codec: { schema: { parse(value: unknown): unknown } } }[];
   const request = { sessionId: 'session-11111111-1111-1111-1111-111111111111', confirmShortId: '11111111', modelReportId: '22222222-2222-2222-2222-222222222222', sourceHash: 'a'.repeat(64) };
   assert.throws(() => parameters[0].codec.schema.parse({ sessionId: request.sessionId, handoff: {} }));
+  assert.deepEqual(parameters[0].codec.schema.parse({ ...request, agentPreset: 'minimal' }), { ...request, agentPreset: 'minimal' });
+  assert.throws(() => parameters[0].codec.schema.parse({ ...request, agentPreset: '' }));
+  assert.throws(() => parameters[0].codec.schema.parse({ ...request, agentPreset: null }));
   assert.deepEqual(parameters[0].codec.schema.parse({ ...request, handoff: { arbitrary: true } }), request);
 });
 

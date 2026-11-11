@@ -37,6 +37,24 @@ test('new generation is preserved and original entities are restored byte-for-by
   assert.equal(recoveryStatus(f.home, sessionId).operations.length, 0);
 });
 
+test('a verified quarantined original can be restored without hashing a changing new cache generation', async (t) => {
+  const f = await fixture();
+  await f.journal.quarantineOriginal();
+  const cache = join(f.home, `storages/session_projcache/sessions/${sessionId}.json`);
+  await mkdir(dirname(cache), { recursive: true });
+  await writeFile(cache, 'new generation still settling');
+  const originalStream = fs.createReadStream;
+  const patched = t.mock.method(fs, 'createReadStream', (path: Parameters<typeof fs.createReadStream>[0], options?: Parameters<typeof fs.createReadStream>[1]) => {
+    if (String(path) === cache && fs.readFileSync(cache, 'utf8').includes('new generation')) throw new Error('injected concurrent cache change');
+    return originalStream(path, options);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { patched.mock.restore(); syncBuiltinESMExports(); });
+  const restored = await f.journal.restoreOriginal();
+  await f.verify();
+  assert.equal(await readFile(join(restored.preservation, `storages/session_projcache/sessions/${sessionId}.json`), 'utf8'), 'new generation still settling');
+});
+
 test('filesystem placement recovers a rename whose event was never committed', async () => {
   const f = await fixture();
   const relative = f.journal.manifest.entries[0].path;

@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { createRequire } from 'node:module';
 import { createModelPreviews } from "./model-previews.js";
 import { assertModelChoice } from "./model-handoff.js";
+import { observedAgentPreset } from "./agent-preset.js";
 import { createEvaluationSettings } from "./evaluation-settings.js";
 import { registerSessionRpc } from "./register-rpc.js";
 import { ENDPOINTS } from './typert.js';
@@ -84,7 +85,7 @@ export async function apply(ctx, config) {
                 const handoff = buildHandoff(observation.events, { ...config, k: config.defaultK });
                 const pending = recoveryStatus(home, sessionId);
                 const eligibility = pending.operations.length || pending.issues.length ? { canReset: false, blockedReason: '存在未完成或不可校验的事务，请先核对恢复记录' } : lifecycle.inspect(sessionId);
-                return { ok: true, sessionId, ...sessionMetrics(observation.events), ...eligibility, size: Buffer.byteLength(JSON.stringify(handoff)), k: handoff.k, messages: handoff.recent_messages.length };
+                return { ok: true, sessionId, ...sessionMetrics(observation.events), agentPreset: observedAgentPreset(observation) ?? null, ...eligibility, size: Buffer.byteLength(JSON.stringify(handoff)), k: handoff.k, messages: handoff.recent_messages.length };
             }
             finally {
                 observation[Symbol.dispose]?.();

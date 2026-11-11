@@ -8,12 +8,12 @@ import { syncBuiltinESMExports } from 'node:module';
 import { executeReset, executeRecovery } from '../lib/reset.js';
 import { recoveryStatus, ResetJournal } from '../lib/reset-journal.ts';
 
-function fixture({ failCreate = false, activity = [] } = {}) {
+function fixture({ failCreate = false, activity = [], wrongPreset = false } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'dsh-reset-isolated-'));
   const id = 'session-11111111-1111-1111-1111-111111111111';
   const forkId = 'session-22222222-2222-2222-2222-222222222222';
   const file = (sid) => join(home, 'sessions', 'bucket', sid, 'session.json');
-  const original = { header: { id, cwd: home }, events: [
+  const original = { header: { id, cwd: home, agentPreset: 'standard' }, events: [
     { type: 'turn/start', seq: 0, data: { turn: 1 } },
     { type: 'user/message', seq: 1, data: { content: [{ type: 'text', text: 'first task' }] } },
     { type: 'turn/end', seq: 2, data: { turn: 1 } },
@@ -39,7 +39,7 @@ function fixture({ failCreate = false, activity = [] } = {}) {
   const persistence = {
     async flush() {},
     async stat(sid) { return existsSync(file(sid)) ? { sizeBytes: readFileSync(file(sid)).length } : undefined; },
-    async open(sid) { return { read: async () => JSON.parse(readFileSync(file(sid), 'utf8')), close: async () => {} }; },
+    async open(sid) { return { header: JSON.parse(readFileSync(file(sid), 'utf8')).header, read: async () => ({ events: JSON.parse(readFileSync(file(sid), 'utf8')).events }), close: async () => {} }; },
   };
   const controller = {
     async fork() {
@@ -49,8 +49,8 @@ function fixture({ failCreate = false, activity = [] } = {}) {
       save(forkId, { header: { ...source.header, id: forkId }, events: source.events });
       return { sessionId: forkId };
     },
-    async create() {
-      const fresh = { header: { id, cwd: home }, events: [] };
+    async create(request) {
+      const fresh = { header: { id, cwd: home, agentPreset: wrongPreset ? 'standard' : request.agentPreset }, events: [] };
       save(id, fresh);
       if (failCreate) throw new Error('injected create failure');
       agents.set(id, { status: 'idle', runMaintenance: (operation) => operation(), session: {
@@ -64,7 +64,11 @@ function fixture({ failCreate = false, activity = [] } = {}) {
     async rename({ sessionId, title }) { agents.get(sessionId).session.append('session/title', { title, messageSeqs: [] }); },
     agents: { async resolveAgent(sid) { return { agent: { id: sid } }; } },
   };
-  const services = { agents: { get: (sid) => agents.get(sid) }, sessionPersistence: persistence, sessionController: controller, workspaceRegistry: { archiveSession: async () => {} } };
+  const presets = { async resolve(id = 'standard') {
+    if (!['standard', 'minimal', 'broken'].includes(id)) throw new Error('Unknown agent preset');
+    return { id, ...(id === 'broken' ? { broken: 'injected activation error' } : {}) };
+  } };
+  const services = { agentPresets: presets, agents: { get: (sid) => agents.get(sid) }, sessionPersistence: persistence, sessionController: controller, workspaceRegistry: { archiveSession: async () => {} } };
   const ctx = {
     get: (name) => services[name],
     waterfall: async () => activity,
@@ -72,8 +76,8 @@ function fixture({ failCreate = false, activity = [] } = {}) {
   };
   const rows = [];
   const ledger = { append(record) { const row = { at: rows.length + 1, ...record }; rows.push(row); return row; } };
-  const run = (options = {}) => executeReset(ctx, ledger, lifecycle, home, { sessionId: id, confirmShortId: id.slice(8, 16) }, { defaultK: 12, handoffHardCapKB: 512, buildHandoff: () => ({ k: 12, recent_messages: [{ role: 'user', text: 'task history' }] }), ...options });
-  return { home, file, id, run, bytes, rows, ctx, ledger, lifecycle, forkCalls: () => forkCalls };
+  const run = (options = {}, request = {}) => executeReset(ctx, ledger, lifecycle, home, { sessionId: id, confirmShortId: id.slice(8, 16), ...request }, { defaultK: 12, handoffHardCapKB: 512, buildHandoff: () => ({ k: 12, recent_messages: [{ role: 'user', text: 'task history' }] }), ...options });
+  return { home, file, id, run, bytes, rows, ctx, ledger, lifecycle, services, released: () => released, forkCalls: () => forkCalls };
 }
 
 test('reset completes only after a new one-turn handoff is durably read back', async () => {
@@ -89,11 +93,50 @@ test('reset completes only after a new one-turn handoff is durably read back', a
   assert.equal(f.rows.at(-1).state, 'DONE');
 });
 
+test('rebirth defaults to the original preset and can explicitly choose another on the same ID', async () => {
+  const original = fixture();
+  const preserved = await original.run();
+  assert.equal(preserved.before.agentPreset, 'standard');
+  assert.equal(preserved.after.agentPreset, 'standard');
+  const changed = fixture();
+  const selected = await changed.run({}, { agentPreset: 'minimal' });
+  assert.equal(selected.sessionId, changed.id);
+  assert.equal(selected.before.agentPreset, 'standard');
+  assert.equal(selected.after.agentPreset, 'minimal');
+  assert.equal(JSON.parse(readFileSync(changed.file(changed.id), 'utf8')).header.agentPreset, 'minimal');
+  assert.deepEqual(readFileSync(join(selected.quarantine, 'original', 'sessions/bucket', changed.id, 'session.json')), changed.bytes);
+});
+
+test('invalid, unavailable or broken preset choices fail before release, fork and storage changes', async () => {
+  for (const agentPreset of ['', null, 42, ' minimal ', 'missing', 'broken']) {
+    const f = fixture();
+    await assert.rejects(f.run({}, { agentPreset }));
+    assert.equal(f.released(), false);
+    assert.equal(f.forkCalls(), 0);
+    assert.deepEqual(readFileSync(f.file(f.id)), f.bytes);
+  }
+});
+
+test('a preset that disappears during backup cannot quarantine the original', async () => {
+  const f = fixture();
+  await assert.rejects(f.run({ buildHandoff: () => { f.services.agentPresets.resolve = async () => { throw new Error('preset removed'); }; return { recent_messages: [] }; } }, { agentPreset: 'minimal' }), /preset removed/);
+  assert.deepEqual(readFileSync(f.file(f.id)), f.bytes);
+  assert.equal(recoveryStatus(f.home, f.id).operations.length, 0);
+});
+
+test('a wrong rebuilt preset is rejected and restores the original preset and exact bytes', async () => {
+  const f = fixture({ wrongPreset: true });
+  await assert.rejects(f.run({}, { agentPreset: 'minimal' }), /Agent预设与选择不一致/);
+  assert.deepEqual(readFileSync(f.file(f.id)), f.bytes);
+  assert.equal(f.rows.at(-1).state, 'ROLLED_BACK');
+});
+
 test('the chosen asynchronous model seed is saved exactly and its provenance is committed', async () => {
   const f = fixture();
   const seed = { kind: 'handoff-seed', version: 2, sourceSessionId: f.id, capturedThroughSeq: 5, historicalOnly: true, selected_messages: [{ role: 'user', text: 'first task', seq: 1 }] };
   const modelReportId = '33333333-3333-3333-3333-333333333333';
-  const value = await f.run({ modelReportId, modelSourceHash: 'a'.repeat(64), buildHandoff: async (_events, _options, source) => { assert.equal(source.header.id, f.id); await Promise.resolve(); return seed; } });
+  const value = await f.run({ modelReportId, modelSourceHash: 'a'.repeat(64), buildHandoff: async (_events, _options, source) => { assert.equal(source.header.id, f.id); await Promise.resolve(); return seed; } }, { agentPreset: 'minimal' });
+  assert.equal(value.after.agentPreset, 'minimal');
   assert.equal(value.handoffMode, 'model');
   assert.equal(value.modelReportId, modelReportId);
   const saved = JSON.parse(readFileSync(f.file(f.id), 'utf8')).events.find((event) => event.type === 'user/message').data.content[0].text;

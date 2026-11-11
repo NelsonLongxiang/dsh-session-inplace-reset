@@ -1,5 +1,6 @@
 import { assertModelChoice } from "./model-handoff.js";
 import { assertSessionId } from "./session-id.js";
+import { optionalAgentPreset } from "./agent-preset.js";
 /** Own all current endpoints through a separate contribution; cached older namespaces remain untouched. */
 export async function registerSessionRpc(ctx, artifact) {
     const dry = artifact.invocations.find((item) => item.method === 'sessionResetDryRun');
@@ -34,7 +35,8 @@ export async function registerSessionRpc(ctx, artifact) {
                 assertSessionId(input.sessionId);
                 if (typeof input.confirmShortId !== 'string')
                     throw new TypeError('confirmation required');
-                return { sessionId: input.sessionId, confirmShortId: input.confirmShortId, modelReportId: value.modelReportId, sourceHash: value.sourceHash };
+                const agentPreset = optionalAgentPreset(input.agentPreset);
+                return { sessionId: input.sessionId, confirmShortId: input.confirmShortId, modelReportId: value.modelReportId, sourceHash: value.sourceHash, ...(agentPreset === undefined ? {} : { agentPreset }) };
             } },
     };
     const modelExecute = { ...dry, id: `${packageKey}#sessionReset/sessionResetExecuteModel`, method: 'sessionResetExecuteModel', parameters: [{ name: 'request', wire: 'request', source: 'json', codec: modelRequestCodec }], result: { ...dry.result, typeSymbol: `${packageKey}/types#ExecuteValue` } };

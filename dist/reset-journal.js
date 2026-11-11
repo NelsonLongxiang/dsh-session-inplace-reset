@@ -193,14 +193,16 @@ export class ResetJournal {
             const source = join(this.home, entry.path), original = join(this.quarantine, 'original', entry.path);
             noLinks(this.home, source);
             noLinks(this.home, original);
-            if (!(await matches(source, entry.original)) && !(await matches(original, entry.original)))
+            if (!(await matches(original, entry.original)) && !(await matches(source, entry.original)))
                 throw new Error('原件不完整或摘要不符，已保留所有代际并停止恢复');
         }
         this.record('recovering');
         const preservation = join(this.quarantine, 'preserved', randomUUID());
         for (const path of sessionEntities(this.home, this.manifest.sessionId)) {
             const entry = this.manifest.entries.find((entry) => entry.path === path);
-            if (entry && await matches(join(this.home, path), entry.original))
+            // A verified quarantined original makes the current path a generation to preserve, even while its derived cache settles.
+            const original = entry && join(this.quarantine, 'original', path);
+            if (entry && !existsSync(original) && await matches(join(this.home, path), entry.original))
                 continue;
             const target = join(preservation, path);
             noLinks(this.home, target);

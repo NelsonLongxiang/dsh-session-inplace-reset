@@ -56,7 +56,7 @@ socket.addEventListener('message', ({ data }) => {
   } else if (message.method === 'Fetch.requestPaused') {
     const { requestId, request } = message.params;
     const body = JSON.parse(request.postData);
-    requests.push({ method: body.method, sessionId: body.payload.args.sessionId ?? body.payload.args.request?.sessionId, modelReportId: body.payload.args.request?.modelReportId, sourceHash: body.payload.args.request?.sourceHash });
+    requests.push({ method: body.method, sessionId: body.payload.args.sessionId ?? body.payload.args.request?.sessionId, modelReportId: body.payload.args.request?.modelReportId, sourceHash: body.payload.args.request?.sourceHash, agentPreset: body.payload.args.request?.agentPreset });
     if (recoveryMode && (body.method.endsWith('/sessionResetRecoveries') || body.method.endsWith('/sessionResetRecoveryStatus'))) {
       const value = { ...(body.payload.args.sessionId ? { sessionId: body.payload.args.sessionId } : {}), operations: [recoveryFixture], issues: [], warnings: [] };
       const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: true, value } });
@@ -288,6 +288,14 @@ try {
       await until(`document.querySelector('[data-inplace-reset-selected-model]')?.dataset.inplaceResetSelectedModel === ${JSON.stringify(chosenReportId)}`, 'explicit model selection');
       assert.equal(await evaluate(`document.getElementById('inplace-reset-confirm').value`), '');
     }
+    const presetOption = process.argv.indexOf('--agent-preset');
+    const requestedPreset = presetOption < 0 ? undefined : process.argv[presetOption + 1];
+    if (requestedPreset) {
+      await until(`!!document.querySelector('#inplace-reset-agent-preset option[value="${requestedPreset}"]:not([disabled])')`, 'requested preset available');
+      await evaluate(`(() => { const select = document.getElementById('inplace-reset-agent-preset'); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(select, ${JSON.stringify(requestedPreset)}); select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+      await until(`document.querySelector('[data-inplace-reset-preset-choice]')?.dataset.inplaceResetPresetChoice === ${JSON.stringify(requestedPreset)}`, 'new preset selected');
+      assert.equal(await evaluate(`document.getElementById('inplace-reset-confirm').value`), '');
+    }
     const actionLabel = useModel ? '应用候选并重置' : '备份并重置';
     await evaluate(`(() => { const input = document.getElementById('inplace-reset-confirm'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(sessionId.slice(8, 16))}); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     await until(`[...document.querySelectorAll('[role="dialog"] button')].some(el => el.textContent === ${JSON.stringify(actionLabel)} && !el.disabled)`, 'confirmation enables test action');
@@ -297,6 +305,10 @@ try {
     await until(`['DONE', 'NOT_RESET'].includes(document.querySelector('[data-inplace-reset-result]')?.getAttribute('data-inplace-reset-result'))`, 'reset operation settled', 70_000);
     const settled = await evaluate(`({ phase: document.querySelector('[data-inplace-reset-result]')?.getAttribute('data-inplace-reset-result'), text: document.querySelector('[data-inplace-reset-result]')?.innerText })`);
     assert.equal(settled.phase, 'DONE', settled.text);
+    if (requestedPreset) {
+      assert.equal(await evaluate(`document.querySelector('[data-inplace-reset-after-preset]')?.dataset.inplaceResetAfterPreset`), requestedPreset);
+      assert.equal(requests.find((request) => /\/sessionResetExecute(?:Model)?$/.test(request.method))?.agentPreset, requestedPreset);
+    }
     if (useModel) {
       assert.equal(await evaluate(`document.querySelector('[data-inplace-reset-applied-model]')?.dataset.inplaceResetAppliedModel`), chosenReportId);
       assert.equal(requests.filter((request) => request.method.endsWith('/sessionResetExecuteModel') && request.modelReportId === chosenReportId).length, 1);
@@ -311,7 +323,7 @@ try {
     await mkdir(out, { recursive: true });
     const shot = await send('Page.captureScreenshot', { format: 'png' });
     await writeFile(join(out, 'verified-live-reset.png'), Buffer.from(shot.data, 'base64'));
-    await writeFile(join(out, 'result.json'), JSON.stringify({ sessionId, result, chosenReportId, requests, checks: ['verified DONE restored after browser reload', 'old history window replaced', 'composer usable', 'old turn/step and token counters cleared', 'no DSH restart requested'] }, null, 2));
+    await writeFile(join(out, 'result.json'), JSON.stringify({ sessionId, result, chosenReportId, requestedPreset, requests, checks: ['verified DONE restored after browser reload', 'old history window replaced', 'composer usable', 'old turn/step and token counters cleared', 'no DSH restart requested'] }, null, 2));
     console.log(`PASS actual menu reset ${sessionId}: ${result}; active history refreshed; evidence: ${out}`);
   } else {
   const rows = await evaluate(`JSON.stringify([...document.querySelectorAll('[data-row-key^="session:"]')].filter(row => row.querySelector('[class*="rowActions"] button')).slice(0, 2).map(row => ({ id: row.dataset.rowKey.slice(8), title: row.querySelector('[class*="title"]')?.textContent ?? '' })))`);
@@ -330,6 +342,14 @@ try {
     assert.match(text, /交接包大小：\d/);
     assert.equal(requests.at(-1)?.sessionId, row.id);
     assert.equal(await evaluate(`document.getElementById('inplace-reset-confirm').value`), '');
+    await until(`!!document.querySelector('#inplace-reset-agent-preset option[value="minimal"]')`, 'live preset roster');
+    assert.equal(await evaluate(`document.getElementById('inplace-reset-agent-preset').value`), '');
+    if (row.id === second.id) {
+      await evaluate(`(() => { const input = document.getElementById('inplace-reset-confirm'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '12345678'); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      await evaluate(`(() => { const select = document.getElementById('inplace-reset-agent-preset'); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(select, 'minimal'); select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+      await until(`document.querySelector('[data-inplace-reset-preset-choice]')?.dataset.inplaceResetPresetChoice === 'minimal'`, 'preset choice shown');
+      assert.equal(await evaluate(`document.getElementById('inplace-reset-confirm').value`), '');
+    }
     assert.equal(await evaluate(`document.querySelector('[aria-selected="true"][data-row-key]')?.getAttribute('data-row-key')`), `session:${first.id}`);
     evidence.targets.push({ sessionId: row.id, title: row.title, preview: text });
     console.log(`PASS menu → preview ${row.id}: ${text.replace(/\n/g, ' | ')}`);
@@ -340,7 +360,7 @@ try {
     }
     await closePreview();
   }
-  evidence.checks.push('two distinct row IDs passed through to read-only RPC', 'inactive row menu does not switch active conversation', 'dialog persists after menu closes', 'fresh confirmation for each row');
+  evidence.checks.push('two distinct row IDs passed through to read-only RPC', 'inactive row menu does not switch active conversation', 'dialog persists after menu closes', 'fresh confirmation for each row', 'preset roster defaults to preserving the source preset', 'changing preset clears prior confirmation');
 
   for (const status of ['pass', 'pending', 'fail', 'unavailable']) {
     await openPreview(second.id);

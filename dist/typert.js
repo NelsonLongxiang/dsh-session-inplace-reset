@@ -1,3 +1,4 @@
+import { optionalAgentPreset } from "./agent-preset.js";
 // This plugin owns its Remote service and registers its endpoints under /preview.
 // The automatic-loader artifact remains empty so cached older artifacts can coexist during hot upgrades.
 // strict codec 形状(typert-loader 要求 mode:'strict' + typeSymbol)
@@ -17,6 +18,7 @@ const executeRequestCodec = {
             const o = typeof v === 'object' && v !== null ? v : {};
             if (typeof o.sessionId !== 'string' || !o.sessionId.startsWith('session-'))
                 throw new TypeError('request.sessionId required');
+            optionalAgentPreset(o.agentPreset);
             return o;
         } },
 };

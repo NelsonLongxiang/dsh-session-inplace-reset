@@ -7,6 +7,7 @@
 - `lib/session-lifecycle.js` 针对已验证的 AgentLoop/Cordis 布局，定位唯一的 `agentLoop.scope(id)` 有序 disposer。依赖宿主 effect 元数据，未知形状、身份变化或运行中状态会拒绝修改存储。
 - 并发闸覆盖目标会话的输入、创建、准备与恢复入口，其他会话可继续工作。
 - `lib/backup.js` 将 fork 的持久化事件前缀与原事件逐项比较。备份大小、行数相近不能代替该核验。
+- `lib/agent-preset.ts` 从正式投影/持久化选择事件读取原预设。执行请求可选 `agentPreset`，省略沿用原预设；指定时用宿主 `agentPresets.resolve()` 在释放前校验，并在隔离前复检。创建同ID会话时显式传入已解析ID，独立读回必须匹配。近期采样与模型候选共享此路径，失败始终恢复原预设。
 - `lib/reset-transaction.ts` 组织执行与显式恢复；`lib/reset.js` 只保留既有导入入口。
 - `lib/reset-journal.ts` 在 `session-reset/transactions/<operationId>/` 原子发布不可变清单，记录原路径、SHA-256、字节数和文件数。每步状态写入新的事件文件并fsync；隔离原件位于 `quarantine/<operationId>/original/`。
 - 恢复根据实际位置与摘要识别“重命名已完成、事件未写入”的中断窗口。原位出现的新实体先移至 `preserved/<generationId>/`，再恢复原件。回迁再次失败仍保留已完成步骤，下一次恢复跳过已校验回迁的实体，冲突时拒绝覆盖。
@@ -41,7 +42,7 @@
 
 `src/client.ts` 是浏览器单一源码；`tools/build-client.ts` 生成 `lib/client.js`，`tools/build-package.ts` 将所有发行入口编译到 `dist/*.js` 并改写 `.ts` 相对导入。普通 `node_modules` 安装不再依赖 Node 类型擦除。
 
-设置卡注册到官方 `settings.models.footer`。重置入口仍在会话行菜单，恢复列表注册到 `sidebar.footer.action`，通过独立 overlay 选择事务。真实隔离演练已确认原会话行可能从目录消失，恢复不能依赖该行仍存在。输入目标短ID后才允许恢复，新代际始终先保留。
+设置卡注册到官方 `settings.models.footer`。重置入口仍在会话行菜单，重生预设下拉复用 `agentPresets/list`，默认沿用原预设，broken项不可选；更改预设需重新输入短ID。恢复列表注册到 `sidebar.footer.action`，通过独立 overlay 选择事务。真实隔离演练已确认原会话行可能从目录消失，恢复不能依赖该行仍存在。输入目标短ID后才允许恢复，新代际始终先保留。
 
 ## 已验证与未覆盖
 

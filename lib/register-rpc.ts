@@ -1,5 +1,6 @@
 import { assertModelChoice } from './model-handoff.ts';
 import { assertSessionId } from './session-id.ts';
+import { optionalAgentPreset } from './agent-preset.ts';
 
 interface Invocation { id: string; method: string; namespace: string; result: Record<string, unknown>; [key: string]: unknown }
 interface Manifest { package: string; face: string; invocations: Invocation[]; [key: string]: unknown }
@@ -35,7 +36,8 @@ export async function registerSessionRpc(ctx: Context, artifact: Manifest): Prom
       const input = value as unknown as Record<string, unknown>;
       assertSessionId(input.sessionId);
       if (typeof input.confirmShortId !== 'string') throw new TypeError('confirmation required');
-      return { sessionId: input.sessionId, confirmShortId: input.confirmShortId, modelReportId: value.modelReportId, sourceHash: value.sourceHash };
+      const agentPreset = optionalAgentPreset(input.agentPreset);
+      return { sessionId: input.sessionId, confirmShortId: input.confirmShortId, modelReportId: value.modelReportId, sourceHash: value.sourceHash, ...(agentPreset === undefined ? {} : { agentPreset }) };
     } },
   };
   const modelExecute = { ...dry, id: `${packageKey}#sessionReset/sessionResetExecuteModel`, method: 'sessionResetExecuteModel', parameters: [{ name: 'request', wire: 'request', source: 'json', codec: modelRequestCodec }], result: { ...dry.result, typeSymbol: `${packageKey}/types#ExecuteValue` } };
