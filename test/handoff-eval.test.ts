@@ -74,6 +74,8 @@ test('selection is extractive, audited against all supplied candidates, and cann
   assert.equal(result.mode, 'shadow');
   assert.deepEqual(result.selected.map((item) => item.text), snapshot.messages.map((item) => item.text));
   assert.equal(JSON.stringify(snapshot), original);
+  assert.equal(result.handoff!.version, 3);
+  assert.ok(result.handoff!.selected_messages.every((row) => !('score' in row) && !('retention' in row) && !('superseded' in row)), 'Original excerpts must not carry model verdicts into the conversation');
 });
 
 test('pending selections are retained without labelling the package approved', async () => {
@@ -100,6 +102,35 @@ test('partial coverage cannot pass even when every model answer is positive', as
   const result = await previewHandoff(source([message(0, 'user', '字'.repeat(5000))]), async (_state, questions) => answer(questions), { maxCandidates: 2 });
   assert.equal(result.status, 'pending');
   assert.equal(result.coverage.complete, false);
+});
+
+test('one conservative repair restores omitted original context without changing confidence thresholds', async () => {
+  let calls = 0;
+  const result = await previewHandoff(source([message(0, 'user', '保留ID，下一步保存交接'), message(1, 'assistant', 'fixture ready')]), async (_state, questions) => {
+    calls++;
+    const value = answer(questions, { audit: calls === 2 ? 0.59 : 0.95 });
+    if (calls === 1) value.answers!.c1_importance = { score: 0.8, probabilities: { 0: 0.7, 1: 0.2, 2: 0.08, 3: 0.02 } };
+    return value;
+  });
+  assert.equal(calls, 3);
+  assert.equal(result.strategy, 'conservative');
+  assert.equal(result.selected.length, 2);
+  assert.equal(result.selected[1].retention, 'fail', 'The original model score must not be relabelled pass');
+  assert.equal(result.auditAttempts![0].checks[0].probability, 0.59);
+  assert.equal(result.status, 'pass');
+});
+
+test('conservative repair stops after one changed candidate and a remaining gray band stays pending', async () => {
+  let calls = 0;
+  const result = await previewHandoff(source([message(0, 'user', '有效约束'), message(1, 'assistant', '完成提示')]), async (_state, questions) => {
+    calls++;
+    const value = answer(questions, { audit: 0.59 });
+    if (calls === 1) value.answers!.c1_importance = { score: 0.8, probabilities: { 0: 0.7, 1: 0.2, 2: 0.08, 3: 0.02 } };
+    return value;
+  });
+  assert.equal(calls, 3);
+  assert.equal(result.auditAttempts!.length, 2);
+  assert.equal(result.status, 'pending');
 });
 
 test('UTF-8 budget is enforced and important omissions remain visible', async () => {

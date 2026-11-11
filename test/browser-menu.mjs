@@ -56,7 +56,7 @@ socket.addEventListener('message', ({ data }) => {
   } else if (message.method === 'Fetch.requestPaused') {
     const { requestId, request } = message.params;
     const body = JSON.parse(request.postData);
-    requests.push({ method: body.method, sessionId: body.payload.args.sessionId ?? body.payload.args.request?.sessionId });
+    requests.push({ method: body.method, sessionId: body.payload.args.sessionId ?? body.payload.args.request?.sessionId, modelReportId: body.payload.args.request?.modelReportId, sourceHash: body.payload.args.request?.sourceHash });
     if (recoveryMode && (body.method.endsWith('/sessionResetRecoveries') || body.method.endsWith('/sessionResetRecoveryStatus'))) {
       const value = { ...(body.payload.args.sessionId ? { sessionId: body.payload.args.sessionId } : {}), operations: [recoveryFixture], issues: [], warnings: [] };
       const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: true, value } });
@@ -80,7 +80,7 @@ socket.addEventListener('message', ({ data }) => {
       const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: true, value: { ...simulatedModel, sessionId: body.payload.args.sessionId } } });
       simulatedModel = null;
       void send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'content-type', value: 'application/json' }], body: Buffer.from(response).toString('base64') });
-    } else if (body.method.endsWith('/sessionResetExecute') && (!permittedExecutionId || body.payload.args.request?.sessionId !== permittedExecutionId)) {
+    } else if ((body.method.endsWith('/sessionResetExecute') || body.method.endsWith('/sessionResetExecuteModel')) && (!permittedExecutionId || body.payload.args.request?.sessionId !== permittedExecutionId)) {
       const value = simulatedExecute ?? { ok: false, phase: 'HALTED', reason: 'Browser test blocked an unexpected execute request' };
       simulatedExecute = null;
       const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: true, value } });
@@ -117,7 +117,14 @@ async function until(expression, description, timeout = 25_000) {
   throw new Error(`Not observed: ${description}`);
 }
 
+async function ensureRowVisible(sessionId) {
+  if (await evaluate(`!!document.querySelector('[data-row-key="session:${sessionId}"]')`)) return;
+  await evaluate(`document.querySelectorAll('[data-row-key^="workspace:"][aria-expanded="false"]').forEach(row => row.click())`);
+  await until(`(() => { document.querySelectorAll('button').forEach(button => { if (/^展开其余 \\d+ 个会话$|^Show \\d+ more sessions$/.test(button.textContent.trim())) button.click(); }); return !!document.querySelector('[data-row-key="session:${sessionId}"]'); })()`, 'target session visible after expanding groups', 15000);
+}
+
 async function openMenu(sessionId) {
+  await ensureRowVisible(sessionId);
   return evaluate(`(() => {
     const row = [...document.querySelectorAll('[data-row-key]')].find(row => row.dataset.rowKey === ${JSON.stringify(`session:${sessionId}`)});
     if (!row) throw new Error('Session row missing');
@@ -150,7 +157,7 @@ try {
   assert.equal(await evaluate(`document.body.innerText.includes('authentication required')`), false, 'The specified shared CDP browser must already be authenticated; its login state was not changed');
   await until(`document.querySelectorAll('[data-row-key^="session:"]').length >= 2`, 'two session rows', 40_000);
   assert.equal(await evaluate(`document.body.innerText.includes('Failed to load plugins')`), false);
-  await send('Fetch.enable', { patterns: [{ urlPattern: '*sessionReset/sessionResetEvaluationSettings', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetSaveEvaluationSettings', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetDryRun', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetModelPreview', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetExecute', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetRecoveries', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetRecoveryStatus', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetResume', requestStage: 'Request' }] });
+  await send('Fetch.enable', { patterns: [{ urlPattern: '*sessionReset/sessionResetEvaluationSettings', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetSaveEvaluationSettings', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetDryRun', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetModelPreview', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetExecute', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetExecuteModel', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetRecoveries', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetRecoveryStatus', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetResume', requestStage: 'Request' }] });
   const testOption = executionOption;
   const restoreOption = process.argv.indexOf('--restore-operation');
   if (recoveryMode) {
@@ -166,7 +173,7 @@ try {
     assert.equal(await evaluate(`document.getElementById('inplace-reset-confirm').value`), '');
     assert.equal(await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(button => button.textContent === '恢复原日志').disabled`), true);
     assert.equal(await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].some(button => button.textContent === '备份并重置')`), false);
-    assert.ok(!requests.some((request) => /sessionReset(?:Execute|Resume|ModelPreview)$/.test(request.method)));
+    assert.ok(!requests.some((request) => /sessionReset(?:Execute(?:Model)?|Resume|ModelPreview)$/.test(request.method)));
     await evaluate(`(() => { const input = document.getElementById('inplace-reset-confirm'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(sessionId.slice(8, 16))}); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     await until(`[...document.querySelectorAll('[role="dialog"] button')].some(button => button.textContent === '恢复原日志' && !button.disabled)`, 'explicit recovery confirmation');
     await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(button => button.textContent === '恢复原日志').click()`);
@@ -241,7 +248,7 @@ try {
     await openPreview(sessionId);
     await until(`document.querySelector('[data-inplace-reset-stats]')?.textContent`, 'source after model preview');
     assert.equal(await evaluate(`document.querySelector('[data-inplace-reset-stats]').innerText`), before);
-    assert.ok(requests.every((request) => !request.method.endsWith('/sessionResetExecute')));
+    assert.ok(requests.every((request) => !request.method.endsWith('/sessionResetExecute') && !request.method.endsWith('/sessionResetExecuteModel')));
     await writeFile(join(out, 'result.json'), JSON.stringify({ sessionId, reportId, status, requests, checks: ['real model through row menu', 'readable sources', 'baseline unchanged', 'confirmation remains empty', 'no reset requested'] }, null, 2));
     console.log(`PASS live model preview: ${status}; assessed ${report.coverage.assessed}/${report.coverage.total}; report ${reportId}; browser evidence: ${out}`);
   } else if (restoreOption !== -1) {
@@ -264,18 +271,36 @@ try {
   } else if (testOption !== -1) {
     const sessionId = process.argv[testOption + 1];
     assert.match(sessionId, /^session-[0-9a-f-]{36}$/);
+    await ensureRowVisible(sessionId);
     const label = await evaluate(`(() => { const row = [...document.querySelectorAll('[data-row-key]')].find(el => el.dataset.rowKey === ${JSON.stringify(`session:${sessionId}`)}); if (!row) throw new Error('Test session row missing'); const title = row.querySelector('[class*="title"]')?.textContent ?? ''; if (title.startsWith('[reset-test]')) row.click(); return title; })()`);
     assert.ok(label.startsWith('[reset-test]'), 'Refusing to reset an unlabelled conversation');
     await openPreview(sessionId);
     await until(`document.querySelector('[data-inplace-reset-stats]')?.textContent`, 'test-session preview');
+    const useModel = process.argv.includes('--use-model');
+    let chosenReportId;
+    if (useModel) {
+      await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(button => button.textContent === '模型筛选预览').click()`);
+      await until(`!!document.querySelector('[data-inplace-reset-model-status]') || !!document.querySelector('[data-inplace-reset-model] [role="alert"]')`, 'real candidate evaluated', 60000);
+      const state = await evaluate(`({ status: document.querySelector('[data-inplace-reset-model-status]')?.dataset.inplaceResetModelStatus, error: document.querySelector('[data-inplace-reset-model] [role="alert"]')?.textContent })`);
+      assert.equal(state.status, 'pass', state.error ?? `Candidate was ${state.status}; no reset requested`);
+      chosenReportId = await evaluate(`document.querySelector('[data-inplace-reset-model-status]').dataset.inplaceResetModelReport`);
+      await evaluate(`document.querySelector('[data-inplace-reset-use-model]').click()`);
+      await until(`document.querySelector('[data-inplace-reset-selected-model]')?.dataset.inplaceResetSelectedModel === ${JSON.stringify(chosenReportId)}`, 'explicit model selection');
+      assert.equal(await evaluate(`document.getElementById('inplace-reset-confirm').value`), '');
+    }
+    const actionLabel = useModel ? '应用候选并重置' : '备份并重置';
     await evaluate(`(() => { const input = document.getElementById('inplace-reset-confirm'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(sessionId.slice(8, 16))}); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
-    await until(`[...document.querySelectorAll('[role="dialog"] button')].some(el => el.textContent === '备份并重置' && !el.disabled)`, 'confirmation enables test action');
+    await until(`[...document.querySelectorAll('[role="dialog"] button')].some(el => el.textContent === ${JSON.stringify(actionLabel)} && !el.disabled)`, 'confirmation enables test action');
     const documentEpoch = await evaluate('performance.timeOrigin');
-    await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(el => el.textContent === '备份并重置').click()`);
+    await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(el => el.textContent === ${JSON.stringify(actionLabel)}).click()`);
     await until(`performance.timeOrigin > ${documentEpoch}`, 'browser page renewed without restarting DSH', 35_000);
     await until(`['DONE', 'NOT_RESET'].includes(document.querySelector('[data-inplace-reset-result]')?.getAttribute('data-inplace-reset-result'))`, 'reset operation settled', 70_000);
     const settled = await evaluate(`({ phase: document.querySelector('[data-inplace-reset-result]')?.getAttribute('data-inplace-reset-result'), text: document.querySelector('[data-inplace-reset-result]')?.innerText })`);
     assert.equal(settled.phase, 'DONE', settled.text);
+    if (useModel) {
+      assert.equal(await evaluate(`document.querySelector('[data-inplace-reset-applied-model]')?.dataset.inplaceResetAppliedModel`), chosenReportId);
+      assert.equal(requests.filter((request) => request.method.endsWith('/sessionResetExecuteModel') && request.modelReportId === chosenReportId).length, 1);
+    }
     await until(`[...document.querySelectorAll('[aria-selected="true"][data-row-key^="session:"]')].some(row => row.dataset.rowKey === ${JSON.stringify(`session:${sessionId}`)})`, 'host restores selected test conversation');
     const result = await evaluate(`document.querySelector('[data-inplace-reset-after]').innerText`);
     assert.match(result, /→ 1；/);
@@ -286,7 +311,7 @@ try {
     await mkdir(out, { recursive: true });
     const shot = await send('Page.captureScreenshot', { format: 'png' });
     await writeFile(join(out, 'verified-live-reset.png'), Buffer.from(shot.data, 'base64'));
-    await writeFile(join(out, 'result.json'), JSON.stringify({ sessionId, result, requests, checks: ['verified DONE restored after browser reload', 'old history window replaced', 'composer usable', 'old turn/step and token counters cleared', 'no DSH restart requested'] }, null, 2));
+    await writeFile(join(out, 'result.json'), JSON.stringify({ sessionId, result, chosenReportId, requests, checks: ['verified DONE restored after browser reload', 'old history window replaced', 'composer usable', 'old turn/step and token counters cleared', 'no DSH restart requested'] }, null, 2));
     console.log(`PASS actual menu reset ${sessionId}: ${result}; active history refreshed; evidence: ${out}`);
   } else {
   const rows = await evaluate(`JSON.stringify([...document.querySelectorAll('[data-row-key^="session:"]')].filter(row => row.querySelector('[class*="rowActions"] button')).slice(0, 2).map(row => ({ id: row.dataset.rowKey.slice(8), title: row.querySelector('[class*="title"]')?.textContent ?? '' })))`);
@@ -320,14 +345,23 @@ try {
   for (const status of ['pass', 'pending', 'fail', 'unavailable']) {
     await openPreview(second.id);
     await until(`document.querySelector('[data-inplace-reset-stats]')?.textContent`, 'baseline before simulated model report');
-    simulatedModel = { status, mode: 'shadow', applied: false, coverage: { total: 2, assessed: status === 'pending' ? 1 : 2, complete: status !== 'pending' }, selected: status === 'unavailable' ? [] : [{ id: 'c0', seq: 0, role: 'user', sourceKind: 'user', text: '原文约束：禁止重启实例', retention: 'pass', superseded: 'fail' }], checks: status === 'unavailable' ? [] : ['constraints', 'state', 'faithful'].map((key) => ({ key, probability: status === 'pass' ? 0.95 : status === 'fail' ? 0.1 : 0.5, outcome: status === 'pass' ? 'pass' : status === 'fail' ? 'fail' : 'pending' })) };
+    simulatedModel = { reportId: crypto.randomUUID(), sourceHash: 'a'.repeat(64), status, mode: 'shadow', applied: false, coverage: { total: 2, assessed: status === 'pending' ? 1 : 2, complete: status !== 'pending' }, selected: status === 'unavailable' ? [] : [{ id: 'c0', seq: 0, role: 'user', sourceKind: 'user', text: '原文约束：禁止重启实例', retention: 'pass', superseded: 'fail' }], checks: status === 'unavailable' ? [] : ['constraints', 'state', 'faithful'].map((key) => ({ key, probability: status === 'pass' ? 0.95 : status === 'fail' ? 0.1 : 0.5, outcome: status === 'pass' ? 'pass' : status === 'fail' ? 'fail' : 'pending' })) };
     await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(button => button.textContent === '模型筛选预览').click()`);
     await until(`document.querySelector('[data-inplace-reset-model-status]')?.getAttribute('data-inplace-reset-model-status') === ${JSON.stringify(status)}`, `model status ${status}`);
     assert.equal(await evaluate(`document.getElementById('inplace-reset-confirm').value`), '');
     assert.equal(requests.at(-1).sessionId, second.id);
+    assert.equal(await evaluate(`document.querySelector('[data-inplace-reset-use-model]').disabled`), status !== 'pass');
+    if (status === 'pass') {
+      await evaluate(`document.querySelector('[data-inplace-reset-use-model]').click()`);
+      await until(`!!document.querySelector('[data-inplace-reset-selected-model]')`, 'candidate explicitly selected');
+      assert.equal(await evaluate(`document.getElementById('inplace-reset-confirm').value`), '');
+      assert.equal(await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(button => button.textContent === '应用候选并重置').disabled`), true);
+      await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(button => button.textContent === '改用近期采样').click()`);
+      assert.equal(await evaluate(`!!document.querySelector('[data-inplace-reset-selected-model]')`), false);
+    }
     await closePreview();
   }
-  evidence.checks.push('model pass, pending, fail and unavailable are distinct', 'model preview never fills reset confirmation');
+  evidence.checks.push('model pass, pending, fail and unavailable are distinct', 'model preview never fills reset confirmation', 'only a passing candidate can be explicitly selected', 'selection does not confirm or execute a reset');
 
   for (const value of [
     { ok: true, phase: 'HALTED_LIVE', reason: '宿主仍持有会话，未执行重置' },

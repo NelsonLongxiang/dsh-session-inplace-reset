@@ -1,19 +1,8 @@
-var __rewriteRelativeImportExtension = (this && this.__rewriteRelativeImportExtension) || function (path, preserveJsx) {
-    if (typeof path === "string" && /^\.\.?\//.test(path)) {
-        return path.replace(/\.(tsx)$|((?:\.d)?)((?:\.[^./]+?)?)\.([cm]?)ts$/i, function (m, tsx, d, ext, cm) {
-            return tsx ? preserveJsx ? ".jsx" : ".js" : d && (!ext || !cm) ? m : (d + ext + "." + cm.toLowerCase() + "js");
-        });
-    }
-    return path;
-};
-import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createRequire } from 'node:module';
-import { createHash, randomUUID } from 'node:crypto';
-import { pathToFileURL } from 'node:url';
-import { previewHandoff, RUBRIC, SAMPLER, sourceDigest } from "./handoff-eval.js";
-import { evaluateConnection } from "./decision-model.js";
+import { createModelPreviews } from "./model-previews.js";
+import { assertModelChoice } from "./model-handoff.js";
 import { createEvaluationSettings } from "./evaluation-settings.js";
 import { registerSessionRpc } from "./register-rpc.js";
 import { ENDPOINTS } from './typert.js';
@@ -79,9 +68,9 @@ export async function apply(ctx, config) {
     const home = process.env.DSH_HOME ?? join(homedir(), '.dsh');
     const ledger = new Ledger(home);
     const lifecycle = createSessionLifecycle(ctx, symbols);
-    const previews = new Map();
-    const evaluationSettings = createEvaluationSettings(ctx.get('credentials'), ctx.profileContext?.name ?? 'default', () => previews.clear());
-    let activePreviews = 0;
+    let modelPreviews;
+    const evaluationSettings = createEvaluationSettings(ctx.get('credentials'), ctx.profileContext?.name ?? 'default', () => modelPreviews?.clear());
+    modelPreviews = createModelPreviews(ctx, config, hostRequire, evaluationSettings);
     ctx.effect(() => () => lifecycle.dispose(), 'session-reset: lifecycle guards');
     const methods = {
         async sessionResetEvaluationSettings() { return evaluationSettings.describe(); },
@@ -103,55 +92,14 @@ export async function apply(ctx, config) {
         },
         async sessionResetModelPreview(sessionId) {
             assertSessionId(sessionId);
-            const observation = await ctx.sessionQuery.observeSession(sessionId, { projectionMode: 'none' });
-            let snapshot;
-            try {
-                const { Session } = await import(__rewriteRelativeImportExtension(pathToFileURL(hostRequire.resolve('@deepseek-ai/dsh-session')).href, true));
-                const replay = Session.fromRestore(sessionId, observation.events, observation.header, observation.inheritedEventCount, 'shared-frozen', ctx.get('sessions').messageProjections);
-                const messages = replay.surface.nodes.flatMap((seq) => {
-                    const message = replay.deriveEventMessage(observation.events[seq]);
-                    const text = message?.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
-                    return text ? [{ seq, role: message.role, sourceKind: message.source.kind, text }] : [];
-                });
-                snapshot = { sessionId, cursor: observation.cursor, messages };
-            }
-            finally {
-                observation[Symbol.dispose]?.();
-            }
-            const connection = await evaluationSettings.connection();
-            const key = createHash('sha256').update(JSON.stringify([RUBRIC, SAMPLER, config.handoffTargetKB, connection.cacheKey, sourceDigest(snapshot)])).digest('hex');
-            if (previews.has(key))
-                return previews.get(key);
-            if (activePreviews >= 2)
-                throw new Error('已有模型预览正在评估，请稍后再试');
-            activePreviews++;
-            const pending = (async () => {
-                try {
-                    const report = await previewHandoff(snapshot, (state, questions) => evaluateConnection(connection, state, questions), { targetBytes: config.handoffTargetKB * 1024 });
-                    const reportId = randomUUID();
-                    const directory = join(homedir(), '.expert-teams/data/dsh-session-inplace-reset/runs', `model-${reportId}`);
-                    mkdirSync(directory, { recursive: true });
-                    const value = { ...report, evaluationApiBase: connection.apiBase, reportId, checkedAt: new Date().toISOString() };
-                    writeFileSync(join(directory, 'result.json'), JSON.stringify(value, null, 2), { encoding: 'utf8', flag: 'wx' });
-                    if (report.status === 'unavailable')
-                        previews.delete(key);
-                    return value;
-                }
-                catch (error) {
-                    previews.delete(key);
-                    throw error;
-                }
-                finally {
-                    activePreviews--;
-                }
-            })();
-            previews.set(key, pending);
-            if (previews.size > 8)
-                previews.delete(previews.keys().next().value);
-            return pending;
+            return modelPreviews.preview(sessionId);
         },
         async sessionResetExecute(request) {
             return executeReset(ctx, ledger, lifecycle, home, request, { ...config, buildHandoff });
+        },
+        async sessionResetExecuteModel(request) {
+            assertModelChoice(request);
+            return executeReset(ctx, ledger, lifecycle, home, request, { ...config, modelReportId: request.modelReportId, modelSourceHash: request.sourceHash, buildHandoff: (_events, _options, source) => modelPreviews.handoff(request.sessionId, source, request) });
         },
         async sessionResetResume(request) {
             return executeRecovery(ctx, ledger, lifecycle, home, request);

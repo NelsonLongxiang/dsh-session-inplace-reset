@@ -4,7 +4,7 @@
 
 正式仓库：[NelsonLongxiang/dsh-session-inplace-reset](https://github.com/NelsonLongxiang/dsh-session-inplace-reset)。
 
-当前版本 **0.4.0**，已验证宿主为 **DSH 0.2.1-rc.2 / Cordis 4.0.5 / Node 24**。单会话释放使用有边界的宿主适配；不匹配的运行时形状会拒绝操作。
+当前版本 **0.5.0**，已验证宿主为 **DSH 0.2.1-rc.2 / Cordis 4.0.5 / Node 24**。单会话释放使用有边界的宿主适配；不匹配的运行时形状会拒绝操作。
 
 ## 使用
 
@@ -24,7 +24,7 @@
 git clone https://github.com/NelsonLongxiang/dsh-session-inplace-reset.git
 cd dsh-session-inplace-reset
 npm pack --ignore-scripts
-dsh plugin --profile web add ./local-dsh-session-inplace-reset-0.4.0.tgz --save-exact
+dsh plugin --profile web add ./local-dsh-session-inplace-reset-0.5.0.tgz --save-exact
 ```
 
 上述打包使用已提交产物。修改源码后按下方开发流程重新生成，再打包；不要只复制 `.ts` 文件作为发行入口。
@@ -51,9 +51,11 @@ dsh plugin --profile web add ./local-dsh-session-inplace-reset-0.4.0.tgz --save-
 
 ## 模型筛选预览
 
-重置弹窗中的 **模型筛选预览** 仅生成候选交接包，不触发重置，不自动填写确认 ID。实际重置仍使用上方近期采样；模型候选尚未自动替换实际交接包。
+重置弹窗中的 **模型筛选预览** 先生成候选，不触发重置、不自动填写确认 ID。预览通过后可点击 **本次使用模型候选**，查看原文及来源，再输入短ID并选择 **应用候选并重置**。也可选择 **改用近期采样**；未明确选用候选时仍使用近期采样。
 
-从宿主正式消息投影读取可见文本和文本工具回执，展开旧交接并标记历史引用。最多送评32个片段、48KB候选文本，首尾与最近直接用户消息优先获得预算。两次请求分别判断必要程度/后续纠正，并核对约束、任务状态与事实边界。
+候选应用使用独立执行接口。后端在会话并发闸内重新读取相同消息投影，核对报告ID、完整源摘要/游标、判据与采样版本、当前连接和体积预算。只允许当前进程缓存中完整通过的报告；灰带、失败、未送评、预算遗漏、源或连接变化、缓存失效均拒绝。执行不再次调用模型，也不会静默截断候选或退回近期采样；成功回执、事务记录和最终交接文本可对应到报告。
+
+从宿主正式消息投影读取可见文本和文本工具回执，展开旧交接并标记历史引用。交接种子仅含原文、角色、来源与顺序；模型评分和判定只保留在报告中，不作为续聊事实写入。最多送评32个片段、48KB候选文本，首尾与最近直接用户消息优先获得预算。先判断必要程度/后续纠正，再核对约束、任务状态与事实边界；最多增加一次保守修复核对。初次核对不足且完整送评原文能放入预算、没有筛选或纠正灰带时，改用完整原文候选核对一次。保留原来的必要程度评分和两次核对记录，不对相同候选反复请求、不调整0.7/0.4门槛。
 
 保留等级2/3的合计概率：≥0.7保留、≤0.4省略、中间保留原文并标记待核验。目标体积默认64KB。未送评、预算遗漏、概率灰带或服务不可用均不能显示完整通过。
 
@@ -87,7 +89,7 @@ node test/check-live-reset.mjs --inspect-only
 显式检查：
 
 ```sh
-node test/check-install.ts --launcher /path/to/dsh/lib/bin.js --archive /path/to/local-dsh-session-inplace-reset-0.4.0.tgz
+node test/check-install.ts --launcher /path/to/dsh/lib/bin.js --archive /path/to/local-dsh-session-inplace-reset-0.5.0.tgz
 ```
 
 此检查复用已有 DSH 安装，在独立 `DSH_HOME` 中离线安装发行包、使用随机 loopback 端口启动隔离实例，验证原生凭证持久化和真实会话文件的中断恢复。只停止自己创建的隔离进程，不操作当前服务；凭证测试只使用虚构 Key。
@@ -98,9 +100,11 @@ node test/check-model-preview.ts --live --heldout
 node test/check-live-reset.mjs --reload-only
 node test/check-live-reset.mjs --prepare-model-preview
 node test/check-live-reset.mjs --run
+node test/check-model-apply.ts --run
+node test/check-model-apply.ts --resume /path/to/model-apply-run
 ```
 
-前两条会调用真实评估模型。最后两条要求明确的 `DSH_TEST_SOURCE_SESSION`，仅从指定来源 fork 新测试副本；`--run` 只重置新建并标记的副本。来源不会被重置。集成驱动目前按 Windows 本机3080服务核对有效PID；启用回执必须为 `applied`，不能只凭PID未变认定新接口已生效。
+模型预览与合成验证会调用真实评估模型。`--prepare-model-preview` 和普通 `--run` 需要明确的 `DSH_TEST_SOURCE_SESSION`，只从该来源 fork 新标记副本并重置副本。`check-model-apply.ts --run` 会创建一条短测试来源并调用一次聊天模型，再对其新fork进行真实评估、明确选择和菜单重置；来源保持原历史。测试中断时保留run目录，`--resume` 复用其中记录的来源和副本，先检查已提交事务，不重复已完成的重置。集成驱动目前按 Windows 本机3080服务核对有效PID；启用回执必须为 `applied`，不能只凭PID未变认定新接口已生效。
 
 ## 本地已安装副本的更新
 

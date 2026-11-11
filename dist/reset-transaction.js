@@ -92,7 +92,7 @@ export async function executeReset(ctx, ledger, lifecycle, home, request, cfg) {
             finally {
                 await reader.close();
             }
-            const result = { ok: true, phase: 'DONE', verified: true, sameId: true, sessionId, operationId, forkId: backup.forkId, quarantine: journal.quarantine, before, after };
+            const result = { ok: true, phase: 'DONE', verified: true, sameId: true, sessionId, operationId, forkId: backup.forkId, quarantine: journal.quarantine, before, after, handoffMode: cfg.modelReportId ? 'model' : 'recent', ...(cfg.modelReportId ? { modelReportId: cfg.modelReportId, modelSourceHash: cfg.modelSourceHash } : {}) };
             journal.record('committed', result);
             const auditWarning = history(ledger, { operationId, sessionId, step: 'VERIFY', state: 'DONE', result });
             return { ...result, ...(auditWarning ? { auditWarning } : {}) };

@@ -72,7 +72,7 @@ function fixture({ failCreate = false, activity = [] } = {}) {
   };
   const rows = [];
   const ledger = { append(record) { const row = { at: rows.length + 1, ...record }; rows.push(row); return row; } };
-  const run = () => executeReset(ctx, ledger, lifecycle, home, { sessionId: id, confirmShortId: id.slice(8, 16) }, { defaultK: 12, handoffHardCapKB: 512, buildHandoff: () => ({ k: 12, recent_messages: [{ role: 'user', text: 'task history' }] }) });
+  const run = (options = {}) => executeReset(ctx, ledger, lifecycle, home, { sessionId: id, confirmShortId: id.slice(8, 16) }, { defaultK: 12, handoffHardCapKB: 512, buildHandoff: () => ({ k: 12, recent_messages: [{ role: 'user', text: 'task history' }] }), ...options });
   return { home, file, id, run, bytes, rows, ctx, ledger, lifecycle, forkCalls: () => forkCalls };
 }
 
@@ -87,6 +87,26 @@ test('reset completes only after a new one-turn handoff is durably read back', a
   assert.ok(existsSync(join(value.quarantine, 'original', 'sessions', 'bucket', f.id, 'session.json')));
   assert.deepEqual(readFileSync(join(value.quarantine, 'original', 'sessions', 'bucket', f.id, 'session.json')), f.bytes);
   assert.equal(f.rows.at(-1).state, 'DONE');
+});
+
+test('the chosen asynchronous model seed is saved exactly and its provenance is committed', async () => {
+  const f = fixture();
+  const seed = { kind: 'handoff-seed', version: 2, sourceSessionId: f.id, capturedThroughSeq: 5, historicalOnly: true, selected_messages: [{ role: 'user', text: 'first task', seq: 1 }] };
+  const modelReportId = '33333333-3333-3333-3333-333333333333';
+  const value = await f.run({ modelReportId, modelSourceHash: 'a'.repeat(64), buildHandoff: async (_events, _options, source) => { assert.equal(source.header.id, f.id); await Promise.resolve(); return seed; } });
+  assert.equal(value.handoffMode, 'model');
+  assert.equal(value.modelReportId, modelReportId);
+  const saved = JSON.parse(readFileSync(f.file(f.id), 'utf8')).events.find((event) => event.type === 'user/message').data.content[0].text;
+  assert.ok(saved.endsWith(JSON.stringify(seed)));
+  assert.equal(ResetJournal.load(f.home, value.operationId).events().at(-1).detail.modelReportId, modelReportId);
+});
+
+test('a rejected candidate cannot fork or replace storage and never falls back to recent sampling', async () => {
+  const f = fixture();
+  await assert.rejects(f.run({ buildHandoff: async () => { throw new Error('candidate expired'); } }), /candidate expired/);
+  assert.equal(f.forkCalls(), 0);
+  assert.deepEqual(readFileSync(f.file(f.id)), f.bytes);
+  assert.equal(f.rows.at(-1).state, 'FAILED_UNCHANGED');
 });
 
 test('creation failure preserves the failed generation and restores exact original bytes', async () => {

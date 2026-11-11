@@ -29,7 +29,7 @@ test('preview contribution uses a real exported module key and removes only its 
   assert.equal(manifest.exports['./preview'], './dist/register-rpc.js');
   await registerSessionRpc(runtime.ctx, artifact());
   const preview = runtime.owners.get(`${artifact().package}/preview`)!;
-  assert.deepEqual(preview.invocations.map((item) => item.method), ['sessionResetDryRun', 'sessionResetExecute', 'sessionResetResume', 'sessionResetModelPreview', 'sessionResetEvaluationSettings', 'sessionResetSaveEvaluationSettings', 'sessionResetRecoveryStatus', 'sessionResetRecoveries']);
+  assert.deepEqual(preview.invocations.map((item) => item.method), ['sessionResetDryRun', 'sessionResetExecute', 'sessionResetResume', 'sessionResetModelPreview', 'sessionResetEvaluationSettings', 'sessionResetSaveEvaluationSettings', 'sessionResetRecoveryStatus', 'sessionResetRecoveries', 'sessionResetExecuteModel']);
   runtime.dispose();
   assert.equal(runtime.owners.has(artifact().package), true);
   assert.equal(runtime.owners.has(preview.package), false);
@@ -38,7 +38,7 @@ test('preview contribution uses a real exported module key and removes only its 
 test('cold automatic-loader metadata coexists with all owned RPC endpoints', async () => {
   const runtime = fixture(false);
   await registerSessionRpc(runtime.ctx, artifact());
-  assert.equal(runtime.owners.get(`${artifact().package}/preview`)!.invocations.length, 8);
+  assert.equal(runtime.owners.get(`${artifact().package}/preview`)!.invocations.length, 9);
 });
 
 test('cached base endpoints remain owned by the host while preview activates', async () => {
@@ -75,6 +75,16 @@ test('settings writes use their own strict request codec and strip unrelated fie
   const parse = parameters[0].codec.schema.parse;
   assert.throws(() => parse({ apiBase: 'https://example.test', apiKey: 123 }));
   assert.deepEqual(parse({ apiBase: 'https://example.test', apiKey: 'synthetic-key', extra: 'ignored' }), { apiBase: 'https://example.test', apiKey: 'synthetic-key' });
+});
+
+test('model execution has a distinct endpoint and cannot accept an unbound seed', async () => {
+  const runtime = fixture();
+  await registerSessionRpc(runtime.ctx, artifact());
+  const model = runtime.owners.get(`${artifact().package}/preview`)!.invocations.find((item) => item.method === 'sessionResetExecuteModel')!;
+  const parameters = model.parameters as { codec: { schema: { parse(value: unknown): unknown } } }[];
+  const request = { sessionId: 'session-11111111-1111-1111-1111-111111111111', confirmShortId: '11111111', modelReportId: '22222222-2222-2222-2222-222222222222', sourceHash: 'a'.repeat(64) };
+  assert.throws(() => parameters[0].codec.schema.parse({ sessionId: request.sessionId, handoff: {} }));
+  assert.deepEqual(parameters[0].codec.schema.parse({ ...request, handoff: { arbitrary: true } }), request);
 });
 
 test('an existing preview owner is not overwritten', async () => {

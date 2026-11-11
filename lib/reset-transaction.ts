@@ -74,7 +74,7 @@ export async function executeReset(ctx: HostContext, ledger: OperationLedger, li
         if (after.sessionId !== sessionId || after.totalTurns !== 1 || !saved.events.some((event: any) => event.type === 'user/message' && event.data.content?.some((part: any) => part.text === text))) throw new Error('重置后的独立读回校验失败');
         if (saved.events.some((event: any) => event.type.startsWith('tool/ptc-dispatch'))) throw new Error('新日志仍含旧调度事件');
       } finally { await reader.close(); }
-      const result = { ok: true, phase: 'DONE', verified: true, sameId: true, sessionId, operationId, forkId: backup.forkId, quarantine: journal.quarantine, before, after };
+      const result = { ok: true, phase: 'DONE', verified: true, sameId: true, sessionId, operationId, forkId: backup.forkId, quarantine: journal.quarantine, before, after, handoffMode: cfg.modelReportId ? 'model' : 'recent', ...(cfg.modelReportId ? { modelReportId: cfg.modelReportId, modelSourceHash: cfg.modelSourceHash } : {}) };
       journal.record('committed', result);
       const auditWarning = history(ledger, { operationId, sessionId, step: 'VERIFY', state: 'DONE', result });
       return { ...result, ...(auditWarning ? { auditWarning } : {}) };

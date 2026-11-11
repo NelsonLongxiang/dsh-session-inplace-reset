@@ -1,17 +1,16 @@
 import type * as ReactTypes from 'react';
-import type { PreviewReport } from '../lib/handoff-eval.ts';
+import type { ModelReport } from '../lib/model-handoff.ts';
 import type { EvaluationSettingsView } from '../lib/evaluation-settings.ts';
 
 import type { recoveryStatus, listRecoveryStatus } from '../lib/reset-journal.ts';
 
-type Complete = { ok: true; phase: 'DONE'; verified: true; sameId: true; sessionId: string; before: { totalTurns: number; totalEvents: number }; after: { totalTurns: number; totalEvents: number }; forkId?: string; operationId?: string; auditWarning?: string };
+type Complete = { ok: true; phase: 'DONE'; verified: true; sameId: true; sessionId: string; before: { totalTurns: number; totalEvents: number }; after: { totalTurns: number; totalEvents: number }; forkId?: string; operationId?: string; auditWarning?: string; handoffMode?: 'model' | 'recent'; modelReportId?: string; modelSourceHash?: string };
 type Recovered = { ok: true; phase: 'RECOVERED'; verified: true; sameId: true; sessionId: string; operationId: string; after?: { totalTurns: number; totalEvents: number }; auditWarning?: string };
 type RecoveryView = ReturnType<typeof recoveryStatus> & { warnings: string[] };
 type RecoveryIndexView = ReturnType<typeof listRecoveryStatus> & { warnings: string[] };
 type Success = Complete | Recovered;
 type Result = Success | { phase: 'NOT_RESET'; note: string; forkId?: string };
 type DryRun = { sessionId: string; totalTurns: number; totalEvents: number; messages: number; size: number; k: number; canReset?: boolean; blockedReason?: string };
-type ModelReport = PreviewReport & { reportId?: string };
 type DialogTarget = { sessionId: string; displayTitle?: string; completed?: Success; recoveryOnly?: true };
 type OverlayTarget = DialogTarget | { kind: 'recoveries' };
 type DialogProps = DialogTarget & { onClose: () => void };
@@ -59,6 +58,7 @@ window.__ModuleLoader__.load({
       const [confirmText, setConfirmText] = React.useState('');
       const [attempt, setAttempt] = React.useState(0);
       const [model, setModel] = React.useState<ModelReport | null>(null);
+      const [selectedModel, setSelectedModel] = React.useState<ModelReport | null>(null);
       const [modelLoading, setModelLoading] = React.useState(false);
       const [modelError, setModelError] = React.useState<string | null>(null);
       const modelRequest = React.useRef<AbortController | null>(null);
@@ -122,10 +122,11 @@ window.__ModuleLoader__.load({
         modelRequest.current = controller;
         setModelLoading(true);
         setModel(null);
+        setSelectedModel(null);
         setModelError(null);
         try {
           const value = await rpc<ModelReport>('sessionResetModelPreview', { sessionId }, controller.signal);
-          if (value?.sessionId !== sessionId || value.mode !== 'shadow' || value.applied !== false || !['pass', 'fail', 'pending', 'unavailable'].includes(value.status) || !Array.isArray(value.selected) || !Array.isArray(value.checks) || !Number.isSafeInteger(value.coverage?.assessed) || !Number.isSafeInteger(value.coverage?.total) || value.coverage.assessed < 0 || value.coverage.total < value.coverage.assessed) throw new Error('模型预览数据不完整或不属于所选会话');
+          if (value?.sessionId !== sessionId || typeof value.reportId !== 'string' || !/^[a-f0-9-]{36}$/i.test(value.reportId) || !/^[a-f0-9]{64}$/.test(value.sourceHash) || value.mode !== 'shadow' || value.applied !== false || !['pass', 'fail', 'pending', 'unavailable'].includes(value.status) || !Array.isArray(value.selected) || !Array.isArray(value.checks) || !Number.isSafeInteger(value.coverage?.assessed) || !Number.isSafeInteger(value.coverage?.total) || value.coverage.assessed < 0 || value.coverage.total < value.coverage.assessed) throw new Error('模型预览数据不完整或不属于所选会话');
           if (!value.selected.every((item) => typeof item?.text === 'string' && typeof item.id === 'string' && Number.isSafeInteger(item.seq)) || !value.checks.every((check) => ['constraints', 'state', 'faithful'].includes(check?.key) && Number.isFinite(check.probability) && check.probability >= 0 && check.probability <= 1 && ['pass', 'fail', 'pending'].includes(check.outcome))) throw new Error('模型预览的原文或核对项无效');
           if (value.status === 'pass' && (!value.coverage.complete || value.budgetOmissions && value.budgetOmissions > 0 || !value.selected.length || new Set(value.checks.map((check) => check.key)).size !== 3 || !value.checks.every((check) => check.outcome === 'pass' && check.probability >= 0.7))) throw new Error('未收到完整的模型核对，不能显示通过');
           if (!controller.signal.aborted) setModel(value);
@@ -141,18 +142,18 @@ window.__ModuleLoader__.load({
         setExecuting(true);
         setError(null);
         try {
-          const value = await rpc('sessionResetExecute', {
-            request: { sessionId, confirmShortId: confirmText.trim() },
+          const value = await rpc(selectedModel ? 'sessionResetExecuteModel' : 'sessionResetExecute', {
+            request: { sessionId, confirmShortId: confirmText.trim(), ...(selectedModel ? { modelReportId: selectedModel.reportId, sourceHash: selectedModel.sourceHash } : {}) },
           });
-          if (!isSuccess(value, sessionId) || value.phase !== 'DONE') {
+          if (!isSuccess(value, sessionId) || value.phase !== 'DONE' || selectedModel && (value.handoffMode !== 'model' || value.modelReportId !== selectedModel.reportId || value.modelSourceHash !== selectedModel.sourceHash)) {
             setResult({ phase: 'NOT_RESET', note: value?.reason ?? value?.note ?? '未收到重置成功的读回校验，不能判定完成', forkId: value?.forkId });
             return;
           }
           setResult(value);
           setDry(null);
           try {
-            const { ok, phase, verified, sameId, sessionId: id, before, after, forkId, operationId, auditWarning } = value;
-            window.sessionStorage.setItem(completedKey, JSON.stringify({ sessionId: id, displayTitle, completed: { ok, phase, verified, sameId, sessionId: id, before, after, forkId, operationId, auditWarning } }));
+            const { ok, phase, verified, sameId, sessionId: id, before, after, forkId, operationId, auditWarning, handoffMode, modelReportId, modelSourceHash } = value;
+            window.sessionStorage.setItem(completedKey, JSON.stringify({ sessionId: id, displayTitle, completed: { ok, phase, verified, sameId, sessionId: id, before, after, forkId, operationId, auditWarning, handoffMode, modelReportId, modelSourceHash } }));
             window.location.reload();
           } catch { setError('后端重置已校验完成，请刷新当前标签页以清除旧统计。'); }
         } catch (reason) {
@@ -174,7 +175,7 @@ window.__ModuleLoader__.load({
             variant: 'primary',
             disabled: !dry || dry.canReset === false || !recoveryReady || loading || executing || modelLoading || recovering || confirmText.trim() !== shortId,
             onClick: execute,
-          }, executing ? '正在备份…' : '备份并重置'),
+          }, executing ? (selectedModel ? '正在应用候选…' : '正在备份…') : selectedModel ? '应用候选并重置' : '备份并重置'),
         ),
       },
         h('div', { 'data-inplace-reset-session': sessionId, 'aria-busy': loading || executing || recovering || modelLoading, style: { maxHeight: '65vh', overflowY: 'auto', paddingRight: 4 } },
@@ -187,8 +188,8 @@ window.__ModuleLoader__.load({
             h('div', null, `原日志轮次：${Number.isSafeInteger(dry.totalTurns) ? dry.totalTurns.toLocaleString() : '未提供'}`),
             h('div', null, `事件数：${dry.totalEvents.toLocaleString()}`),
             h('div', null, `消息数：${dry.messages.toLocaleString()}`),
-            h('div', null, `交接包大小：${(dry.size / 1024).toFixed(1)} KB`),
-            h('div', null, `交接包最多采样 ${dry.k} 轮；新日志收敛为 1 轮交接记录`),
+            h('div', null, `交接包大小：${((selectedModel?.size ?? dry.size) / 1024).toFixed(1)} KB`),
+            h('div', null, selectedModel ? `已选模型候选 ${selectedModel.selected.length} 个片段；新日志收敛为 1 轮交接记录` : `交接包最多采样 ${dry.k} 轮；新日志收敛为 1 轮交接记录`),
             dry.canReset === false && h('p', { role: 'alert' }, `当前不可重置：${dry.blockedReason}`),
           ),
           recoveryError && h('p', { role: 'alert', 'data-reset-recovery-error': true }, recoveryError),
@@ -204,7 +205,7 @@ window.__ModuleLoader__.load({
           ),
           !result && dry && h('div', { 'data-inplace-reset-model': true, style: { margin: '16px 0' } },
             h(Button, { variant: 'outline', disabled: loading || executing || recovering || modelLoading, onClick: previewModel }, modelLoading ? '正在筛选并核对…' : '模型筛选预览'),
-            h('p', { style: { fontSize: 12 } }, '向现有决策模型发送文字片段，只生成预览。下方重置操作仍使用上方近期采样。'),
+            h('p', { style: { fontSize: 12 } }, '预览先不修改会话。通过检查后可明确选用这份候选；未选择时使用近期采样。'),
             modelError && h('p', { role: 'alert' }, modelError),
             model && h('div', { 'data-inplace-reset-model-status': model.status, 'data-inplace-reset-model-report': model.reportId, role: 'status' },
               h('b', null, ({ pass: '送评材料内检查通过', fail: '预览未通过', pending: '预览待核验', unavailable: '模型未评估' })[model.status]),
@@ -212,11 +213,15 @@ window.__ModuleLoader__.load({
               !model.coverage.complete && h('p', null, '存在未送评文本，不能视为完整覆盖。'),
               (model.budgetOmissions ?? 0) > 0 && h('p', null, `体积预算另省略 ${model.budgetOmissions} 个待保留片段。`),
               h('ul', null, model.checks.map((check) => h('li', { key: check.key }, `${checkLabels[check.key] ?? check.key}：${({ pass: '通过', fail: '未通过', pending: '待核验' })[check.outcome]}（P=${Number(check.probability).toFixed(2)}）`))),
+              model.strategy === 'conservative' && h('p', null, '本候选保守保留了全部送评原文，已重新核对；未改写原来的必要程度评分。'),
               h('p', { style: { fontSize: 12 } }, model.note),
+              h(Button, { variant: 'outline', 'data-inplace-reset-use-model': true, 'aria-pressed': selectedModel?.reportId === model.reportId, disabled: model.status !== 'pass' || loading || executing || recovering || modelLoading || dry.canReset === false, onClick: () => setSelectedModel(model) }, selectedModel?.reportId === model.reportId ? '已选用此候选' : '本次使用模型候选'),
+              selectedModel && h(Button, { variant: 'ghost', disabled: executing || recovering, onClick: () => setSelectedModel(null) }, '改用近期采样'),
+              selectedModel && h('p', { role: 'status', 'data-inplace-reset-selected-model': selectedModel.reportId }, '本次重置将保存这份候选。请先查看原文及来源，再输入短ID确认。执行前会重新核对会话和评估配置。'),
               h('details', null,
                 h('summary', null, '查看保留原文及来源'),
                 h('div', { style: { maxHeight: 260, overflow: 'auto' } }, model.selected.map((item) => h('div', { key: item.id, style: { marginTop: 12 } },
-                  h('small', null, `事件 #${item.seq} · ${item.historical ? '历史引用' : item.role === 'assistant' ? '助手陈述' : item.role === 'tool' ? '工具返回' : item.sourceKind === 'user' ? '用户消息' : '上下文消息'} · 片段 ${item.id}${item.retention === 'pending' ? ' · 保留待核验' : ''}${item.superseded === 'pass' ? ' · 可能已被后续纠正，需对照来源' : ''}`),
+                  h('small', null, `事件 #${item.seq} · ${item.historical ? '历史引用' : item.role === 'assistant' ? '助手陈述' : item.role === 'tool' ? '工具返回' : item.sourceKind === 'user' ? '用户消息' : '上下文消息'} · 片段 ${item.id}${item.retention === 'pending' || item.superseded === 'pending' ? ' · 保留待核验' : model.strategy === 'conservative' && item.retention === 'fail' ? ' · 保守保留原文' : ''}${item.superseded === 'pass' ? ' · 可能已被后续纠正，需对照来源' : ''}`),
                   h('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 12 } }, item.text),
                 ))),
               ),
@@ -239,6 +244,7 @@ window.__ModuleLoader__.load({
             result.phase === 'DONE' && h('p', { 'data-inplace-reset-after': true }, `原日志轮次：${result.before.totalTurns} → ${result.after.totalTurns}；事件数：${result.before.totalEvents} → ${result.after.totalEvents}`),
             result.phase === 'NOT_RESET' && h('p', null, result.note),
             result.phase !== 'NOT_RESET' && result.auditWarning && h('p', { role: 'alert' }, result.auditWarning),
+            result.phase === 'DONE' && result.handoffMode === 'model' && h('p', { 'data-inplace-reset-applied-model': result.modelReportId }, `交接来源：模型候选 ${result.modelReportId}`),
             result.phase === 'DONE' && result.forkId && h('p', { style: { overflowWrap: 'anywhere' } }, `历史备份：${result.forkId}`),
           ),
         ),

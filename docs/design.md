@@ -27,13 +27,15 @@
 
 展开已识别的历史交接并保留历史引用标记，限制展开深度。候选输入受数量和UTF-8体积约束，首尾与最近直接用户消息先分配预算，再按时间跨度选择其余片段。所有未送评与预算遗漏计入报告。
 
-第一阶段按有业务价值排序的0–3级判据评估必要性，同时识别后续纠正；以保留等级2/3的合计概率做三态路由。灰带保留原文。第二阶段对照所有送评片段核对有效约束、当前状态与角色/来源边界，不能要求原材料未提供的信息。
+第一阶段按有业务价值排序的0–3级判据评估必要性，同时识别后续纠正；以保留等级2/3的合计概率做三态路由。灰带保留原文。第二阶段对照所有送评片段核对有效约束、当前状态与角色/来源边界，不能要求原材料未提供的信息。如果筛选遗漏上下文导致核对未通过，且完整送评原文能入预算并无概率灰带，最多改成全量原文候选再核对一次。原评分、首次核对和最终核对均保留，最终状态仅按最终候选全部判据计算；不重复相同候选、不选取两次结果中的较高值。
 
-模型没有重置、执行命令或发布的权限。此阶段仅输出可检查的候选原文，不自动用于实际重置。Typed output不是事实真值，合成样例不证明真实长历史准确率。
+模型本身没有重置、执行命令或发布的权限。用户明确选中完整通过的候选、输入短ID后，独立的 `sessionResetExecuteModel` 接口才进入既有重置事务。`lib/model-previews.ts` 保持最多8份进程内缓存；报告、当前连接私有摘要、目标体积及源投影摘要共同绑定候选。配置变更清缓存，缓存丢失后不从历史报告JSON恢复执行资格。
+
+`lib/model-handoff.ts` 在会话闸内、目标运行时已释放后，对同一备份观察切片重新构造源投影，核对报告ID、源摘要/游标、采样/判据版本、完整覆盖、三项门槛、原文与来源、预算和种子一致性。失败在fork和隔离前拒绝，不降级到近期采样。通过后原样保存候选种子，回执与事务记录带报告ID和源摘要，执行不增加模型调用。Typed output仍不是事实真值，合成样例不证明真实长历史准确率。
 
 ## 接口与客户端
 
-`lib/remote-service.ts` 使用宿主自己的 `TypertRemoteService` 挂载插件拥有的 `sessionReset` 服务，不再给 `workspaceRegistry` 添加方法或依赖残留绑定。0.4.0接口为 `/api/sessionReset/<method>`，方法名保持 `sessionResetDryRun`、`sessionResetExecute`、`sessionResetResume`、`sessionResetModelPreview`、`sessionResetEvaluationSettings`、`sessionResetSaveEvaluationSettings`、`sessionResetRecoveryStatus`、`sessionResetRecoveries`。
+`lib/remote-service.ts` 使用宿主自己的 `TypertRemoteService` 挂载插件拥有的 `sessionReset` 服务，不再给 `workspaceRegistry` 添加方法或依赖残留绑定。0.4.0接口为 `/api/sessionReset/<method>`，方法名保持 `sessionResetDryRun`、`sessionResetExecute`、`sessionResetResume`、`sessionResetModelPreview`、`sessionResetEvaluationSettings`、`sessionResetSaveEvaluationSettings`、`sessionResetRecoveryStatus`、`sessionResetRecoveries`，以及独立的 `sessionResetExecuteModel`。
 
 宿主自动TYPERT loader按包名长期缓存基础接口清单。当前自动入口只发布空清单，本包已导出的 `/preview` 子模块贡献拥有上述接口。旧版缓存的 `workspaceRegistry` 贡献保持原拥有者，新命名空间与之并存；卸载仅移除自己的服务和贡献，不重载全局缓存。
 
@@ -46,6 +48,7 @@
 - 隔离测试覆盖备份/回退、并发输入隔离、卸载等待事务收口、进程被强制终止、隔离和恢复再次失败、原件摘要、损坏账本保全、概率灰带、体积预算、原文保留、凭证隐私、连接更新及跨域Key绑定。
 - `test/check-install.ts` 在独立 `DSH_HOME` 中离线安装真实发行包，通过现有 DSH 启动随机端口实例，验证服务绑定、原生凭证保存和跨启动读取，以及真实会话文件隔离后的 RPC 恢复。只关闭本轮创建的隔离进程。
 - 浏览器集成检查只操作自身target；普通检查拦截重置和凭证写入。真实演练需要显式参数与新建测试副本。
+- `test/check-model-apply.ts --run` 创建短测试来源并只重置其新标记fork，真实模型与菜单选用后，独立读回种子并与报告逐字比较；同时核对来源历史与原进程。
 - 单会话释放只在声明的宿主版本与布局验证过；升级后必须重跑live演练。
 - 尚无独立人工标注的真实长会话质量基准；不把同一模型对自身的标签当作校准真值。
 - 已完成事务不支持手动撤销；0.4.0未终结事务支持显式恢复，旧版重启记录不自动续跑。断电级持久性未验证；其他同会话标签页可能需要自行刷新。

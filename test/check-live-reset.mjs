@@ -1,12 +1,13 @@
 // Explicit integration drill: only the newly forked, labelled test session is reset. Never restarts DSH.
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
-import { readFile, readdir, stat, mkdir, writeFile } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { readFile, mkdir, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Ledger } from '../lib/ledger.ts';
 import { ResetJournal } from '../lib/reset-journal.ts';
 import { packageRoot, testSourceSession } from './runtime.ts';
+import { connectDsh, servingDshPid } from './dsh-client.ts';
 
 const verifyIndex = process.argv.indexOf('--verify-existing');
 const reloadOnly = process.argv.includes('--reload-only');
@@ -16,41 +17,8 @@ if (!process.argv.includes('--run') && verifyIndex === -1 && !reloadOnly && !pre
 const prior = verifyIndex === -1 ? null : JSON.parse(await readFile(process.argv[verifyIndex + 1], 'utf8'));
 const repo = packageRoot;
 if ((process.argv.includes('--run') || prepareModel) && !/^session-[0-9a-f-]{36}$/i.test(testSourceSession ?? '')) throw new Error('Set DSH_TEST_SOURCE_SESSION before a fork drill; no source is selected implicitly');
-const logs = [join(homedir(), '.dsh/logs/web-3080.log')];
-for (const [root, pattern] of [[tmpdir(), /^dsh-(?:pocket|inplace)-restart-.*\.out\.log$/], [join(repo, 'tmp'), /^(?:d\d+|dsh-.*)\.out$/]]) {
-  for (const name of await readdir(root).catch((error) => { if (error.code === 'ENOENT') return []; throw error; })) if (pattern.test(name)) logs.push(join(root, name));
-}
-const ordered = (await Promise.all(logs.map(async (path) => ({ path, time: (await stat(path)).mtimeMs })))).sort((a, b) => b.time - a.time);
-let call;
-for (const { path } of ordered.slice(0, 14)) {
-  const tokens = [...(await readFile(path, 'utf8')).matchAll(/token=([A-Za-z0-9_-]+)/g)];
-  if (!tokens.length) continue;
-  const response = await fetch(`http://127.0.0.1:3080/?token=${tokens.at(-1)[1]}`, { redirect: 'manual' });
-  const cookie = response.headers.getSetCookie().map((entry) => entry.split(';')[0]).join('; ');
-  if (!cookie) continue;
-  const rpc = async (endpoint, args) => {
-    const rpcId = crypto.randomUUID();
-    const invoke = () => fetch(`http://127.0.0.1:3080/api/${endpoint}`, { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ type: 'client-request', rpcId, method: endpoint, payload: { args } }), signal: AbortSignal.timeout(90_000) });
-    let response;
-    try { response = await invoke(); }
-    catch (error) {
-      if (!['session/list', 'sessionReset/sessionResetDryRun'].includes(endpoint)) throw error;
-      response = await invoke(); // Only these read-only calls may be retried after a stale keep-alive socket.
-    }
-    assert.equal(response.status, 200, endpoint);
-    const full = await response.json();
-    assert.equal(full.rpcId, rpcId);
-    if (!full.result?.ok) throw new Error(`${endpoint}: ${full.result?.error?.message}`);
-    return full.result.value;
-  };
-  try { await rpc('session/list', { _request: {} }); call = rpc; break; } catch { /* Try the next existing log, without printing credentials. */ }
-}
-assert.ok(call, 'No valid DSH session credential found');
-const pid = () => {
-  const value = Number(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '(Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort 3080 -State Listen -ErrorAction Stop | Select-Object -First 1).OwningProcess'], { encoding: 'utf8', timeout: 15_000 }).trim());
-  assert.ok(Number.isSafeInteger(value) && value > 0, 'Could not identify the serving DSH process');
-  return value;
-};
+const call = await connectDsh(90000);
+const pid = servingDshPid;
 const beforePid = prior?.beforePid ?? pid();
 const evidence = prior ? { ...prior, checks: [] } : { beforePid, checks: [] };
 delete evidence.error;

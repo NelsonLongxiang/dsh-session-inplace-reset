@@ -19,4 +19,5 @@ https://github.com/NelsonLongxiang/dsh-session-inplace-reset
 - RPC 由插件自己的 `sessionReset` Remote service 提供，不能依赖对宿主 `workspaceRegistry` 的内存补丁或残留绑定。热升级保留旧贡献拥有者，新接口仅由本包 `/preview` 贡献注册。
 - `lib/reset-journal.ts` 的清单和事件文件不可覆盖；中断恢复按实际文件位置与摘要校验，先保留新代际再回迁原件。原会话行可能已消失，恢复入口必须支持全局查找。
 - 保留原件、备份、隔离与失败代际。不能用事件数相近或压缩体积相近替代逐事件备份验证。
+- 模型候选只能通过独立 `sessionResetExecuteModel` 接口应用；源投影/游标、连接、判据版本、完整覆盖及原文来源均须重新核对。缓存过期、灰带或失败不能退回近期采样，更不能信任客户端传入种子。
 - 同一模型的自评不是独立真值；灰带、未送评、失败和未执行的检查分别报告。
