@@ -4,7 +4,23 @@ export const MAX_BATCHES = 64;
 export const MAX_BATCH_CANDIDATES = 32;
 export const MAX_BATCH_BYTES = 48 * 1024;
 export const MAX_EVALUATION_CALLS = 192;
+export const MAX_PARALLEL_REQUESTS = 4;
 export interface CandidateBatch { candidates: Candidate[]; context: Candidate[] }
+
+/** Stop scheduling after an error, drain in-flight requests, and retain source batch order. */
+export async function runBatches<T>(batches: CandidateBatch[], run: (batch: CandidateBatch, index: number) => Promise<T>) {
+  const results = Array.from<T | undefined>({ length: batches.length });
+  let next = 0, failed = false;
+  let error: unknown;
+  await Promise.all(Array.from({ length: Math.min(MAX_PARALLEL_REQUESTS, batches.length) }, async () => {
+    while (!failed && next < batches.length) {
+      const index = next++;
+      try { results[index] = await run(batches[index], index); }
+      catch (reason) { if (!failed) error = reason; failed = true; }
+    }
+  }));
+  return { results, failed, error };
+}
 
 /** Preserve source anchors in every context; score each candidate at most once and disclose everything outside the bound. */
 export function candidateBatches(candidates: Candidate[], { quoted = [] as Candidate[], maxBatches = MAX_BATCHES } = {}) {

@@ -26,6 +26,9 @@ let nextId = 0;
 let rejectPreview = false;
 let simulatedExecute = null;
 let simulatedModel = null;
+let simulatedTask = null;
+let wrongProgressSession = false;
+const realModelAllowed = process.argv.includes('--model-preview') || process.argv.includes('--use-model');
 const evaluationSettingsMode = process.argv.includes('--evaluation-settings');
 const recoveryMode = process.argv.includes('--recovery-list');
 const recoveryFixture = { operationId: crypto.randomUUID(), sessionId: `session-${crypto.randomUUID()}`, backupId: `session-${crypto.randomUUID()}`, phase: 'quarantined', createdAt: new Date().toISOString() };
@@ -56,7 +59,7 @@ socket.addEventListener('message', ({ data }) => {
   } else if (message.method === 'Fetch.requestPaused') {
     const { requestId, request } = message.params;
     const body = JSON.parse(request.postData);
-    requests.push({ method: body.method, sessionId: body.payload.args.sessionId ?? body.payload.args.request?.sessionId, modelReportId: body.payload.args.request?.modelReportId, sourceHash: body.payload.args.request?.sourceHash, agentPreset: body.payload.args.request?.agentPreset });
+    requests.push({ method: body.method, sessionId: body.payload.args.sessionId ?? body.payload.args.request?.sessionId, modelReportId: body.payload.args.request?.modelReportId, sourceHash: body.payload.args.request?.sourceHash, agentPreset: body.payload.args.request?.agentPreset, taskId: body.payload.args.request?.taskId });
     if (recoveryMode && (body.method.endsWith('/sessionResetRecoveries') || body.method.endsWith('/sessionResetRecoveryStatus'))) {
       const value = { ...(body.payload.args.sessionId ? { sessionId: body.payload.args.sessionId } : {}), operations: [recoveryFixture], issues: [], warnings: [] };
       const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: true, value } });
@@ -76,9 +79,20 @@ socket.addEventListener('message', ({ data }) => {
     } else if (body.method.endsWith('/sessionResetEvaluationSettings') && savedEvaluationSettings) {
       const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: true, value: savedEvaluationSettings } });
       void send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'content-type', value: 'application/json' }], body: Buffer.from(response).toString('base64') });
-    } else if (body.method.endsWith('/sessionResetModelPreview') && simulatedModel) {
-      const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: true, value: { ...simulatedModel, sessionId: body.payload.args.sessionId } } });
+    } else if (body.method.endsWith('/sessionResetModelPreviewStart') && simulatedModel) {
+      simulatedTask = { taskId: crypto.randomUUID(), sessionId: body.payload.args.sessionId, startedAt: new Date().toISOString(), report: { ...simulatedModel, sessionId: body.payload.args.sessionId, concurrency: 4, peakConcurrency: 4 }, step: 0, hold: simulatedModel.status === 'pass' };
       simulatedModel = null;
+      const value = { ...simulatedTask, report: undefined, running: true, progress: { phase: 'selection', completedBatches: 0, totalBatches: 5, running: 4, concurrency: 4, requestCount: 4, requestLimit: 192, assessed: 0, sourceTotal: simulatedTask.report.coverage.total } };
+      const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: true, value } });
+      void send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'content-type', value: 'application/json' }], body: Buffer.from(response).toString('base64') });
+    } else if (body.method.endsWith('/sessionResetModelPreviewStatus') && simulatedTask?.taskId === body.payload.args.request?.taskId) {
+      simulatedTask.step = Math.min(simulatedTask.step + 1, simulatedTask.hold ? 2 : 3);
+      const step = simulatedTask.step;
+      const value = { sessionId: wrongProgressSession ? `session-${crypto.randomUUID()}` : simulatedTask.sessionId, taskId: simulatedTask.taskId, startedAt: simulatedTask.startedAt, running: step < 3, progress: { phase: step < 2 ? 'selection' : step === 2 ? 'audit' : 'complete', completedBatches: step === 3 ? 1 : 2, totalBatches: step === 3 ? 1 : 5, running: step < 3 ? 3 : 0, concurrency: 4, requestCount: step === 1 ? 4 : step === 2 ? 8 : 10, requestLimit: 192, assessed: step < 2 ? Math.min(60, simulatedTask.report.coverage.total) : simulatedTask.report.coverage.assessed, sourceTotal: simulatedTask.report.coverage.total }, ...(step === 3 ? { report: simulatedTask.report } : {}) };
+      const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: true, value } });
+      void send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'content-type', value: 'application/json' }], body: Buffer.from(response).toString('base64') });
+    } else if (/\/sessionResetModelPreview(?:Start|Status)?$/.test(body.method) && !realModelAllowed && !process.argv.includes('--model-api-probe')) {
+      const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: false, error: { message: 'Browser test blocked an unexpected model request' } } });
       void send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'content-type', value: 'application/json' }], body: Buffer.from(response).toString('base64') });
     } else if ((body.method.endsWith('/sessionResetExecute') || body.method.endsWith('/sessionResetExecuteModel')) && (!permittedExecutionId || body.payload.args.request?.sessionId !== permittedExecutionId)) {
       const value = simulatedExecute ?? { ok: false, phase: 'HALTED', reason: 'Browser test blocked an unexpected execute request' };
@@ -157,7 +171,7 @@ try {
   assert.equal(await evaluate(`document.body.innerText.includes('authentication required')`), false, 'The specified shared CDP browser must already be authenticated; its login state was not changed');
   await until(`document.querySelectorAll('[data-row-key^="session:"]').length >= 2`, 'two session rows', 40_000);
   assert.equal(await evaluate(`document.body.innerText.includes('Failed to load plugins')`), false);
-  await send('Fetch.enable', { patterns: [{ urlPattern: '*sessionReset/sessionResetEvaluationSettings', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetSaveEvaluationSettings', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetDryRun', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetModelPreview', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetExecute', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetExecuteModel', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetRecoveries', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetRecoveryStatus', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetResume', requestStage: 'Request' }] });
+  await send('Fetch.enable', { patterns: [{ urlPattern: '*sessionReset/sessionResetEvaluationSettings', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetSaveEvaluationSettings', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetDryRun', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetModelPreview*', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetExecute', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetExecuteModel', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetRecoveries', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetRecoveryStatus', requestStage: 'Request' }, { urlPattern: '*sessionReset/sessionResetResume', requestStage: 'Request' }] });
   const testOption = executionOption;
   const restoreOption = process.argv.indexOf('--restore-operation');
   if (recoveryMode) {
@@ -365,8 +379,21 @@ try {
   for (const status of ['pass', 'pending', 'fail', 'unavailable']) {
     await openPreview(second.id);
     await until(`document.querySelector('[data-inplace-reset-stats]')?.textContent`, 'baseline before simulated model report');
-    simulatedModel = { reportId: crypto.randomUUID(), sourceHash: 'a'.repeat(64), status, mode: 'shadow', applied: false, coverage: { total: 2, assessed: status === 'pending' ? 1 : 2, complete: status !== 'pending' }, selected: status === 'unavailable' ? [] : [{ id: 'c0', seq: 0, role: 'user', sourceKind: 'user', text: '原文约束：禁止重启实例', retention: 'pass', superseded: 'fail' }], checks: status === 'unavailable' ? [] : ['constraints', 'state', 'faithful'].map((key) => ({ key, probability: status === 'pass' ? 0.95 : status === 'fail' ? 0.1 : 0.5, outcome: status === 'pass' ? 'pass' : status === 'fail' ? 'fail' : 'pending' })) };
+    simulatedModel = { reportId: crypto.randomUUID(), sourceHash: 'a'.repeat(64), status, mode: 'shadow', applied: false, auditComplete: status === 'pass', batchCount: 5, requestCount: 10, coverage: { total: 128, assessed: status === 'pending' ? 64 : 128, complete: status !== 'pending' }, selected: status === 'unavailable' ? [] : [{ id: 'c0', seq: 0, role: 'user', sourceKind: 'user', text: '原文约束：禁止重启实例', retention: 'pass', superseded: 'fail' }], checks: status === 'unavailable' ? [] : ['constraints', 'state', 'faithful'].map((key) => ({ key, probability: status === 'pass' ? 0.95 : status === 'fail' ? 0.1 : 0.5, outcome: status === 'pass' ? 'pass' : status === 'fail' ? 'fail' : 'pending' })) };
     await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(button => button.textContent === '模型筛选预览').click()`);
+    if (status === 'pass') {
+      await until(`document.querySelector('[data-inplace-reset-progress]')?.dataset.inplaceResetProgress === 'audit'`, 'parallel progress reaches audit phase');
+      const progress = await evaluate(`(() => { const region = document.querySelector('[data-inplace-reset-progress]'); const bar = region.querySelector('progress'); return { text: region.innerText, value: bar.value, max: bar.max, live: region.getAttribute('aria-live'), parallel: region.querySelector('[data-inplace-reset-parallel]').dataset.inplaceResetParallel }; })()`);
+      assert.match(progress.text, /并行核对/);
+      assert.match(progress.text, /并行 3 \/ 4/);
+      assert.match(progress.text, /8 \/ 192/);
+      assert.equal(progress.value, 2); assert.equal(progress.max, 5); assert.equal(progress.live, 'polite');
+      assert.equal(await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(button => button.textContent === '备份并重置').disabled`), true);
+      await evaluate(`document.querySelector('[data-inplace-reset-progress]').scrollIntoView({ block: 'center' })`);
+      const screenshot = await send('Page.captureScreenshot', { format: 'png' });
+      await writeFile(join(out, 'parallel-progress.png'), Buffer.from(screenshot.data, 'base64'));
+      simulatedTask.hold = false;
+    }
     await until(`document.querySelector('[data-inplace-reset-model-status]')?.getAttribute('data-inplace-reset-model-status') === ${JSON.stringify(status)}`, `model status ${status}`);
     assert.equal(await evaluate(`document.getElementById('inplace-reset-confirm').value`), '');
     assert.equal(requests.at(-1).sessionId, second.id);
@@ -381,7 +408,28 @@ try {
     }
     await closePreview();
   }
-  evidence.checks.push('model pass, pending, fail and unavailable are distinct', 'model preview never fills reset confirmation', 'only a passing candidate can be explicitly selected', 'selection does not confirm or execute a reset');
+  evidence.checks.push('model pass, pending, fail and unavailable are distinct', 'model preview never fills reset confirmation', 'only a passing candidate can be explicitly selected', 'selection does not confirm or execute a reset', 'live phase progress and request counters update before completion', 'actual parallel count and accessible progress bar are visible');
+
+  for (const wrongSession of [false, true]) {
+    await openPreview(second.id);
+    await until(`document.querySelector('[data-inplace-reset-stats]')?.textContent`, 'baseline for progress lifecycle');
+    simulatedModel = { reportId: crypto.randomUUID(), sourceHash: 'a'.repeat(64), status: 'pass', mode: 'shadow', applied: false, auditComplete: true, coverage: { total: 128, assessed: 128, complete: true }, selected: [], checks: [] };
+    wrongProgressSession = wrongSession;
+    await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(button => button.textContent === '模型筛选预览').click()`);
+    if (wrongSession) {
+      await until(`document.querySelector('[data-inplace-reset-model] [role="alert"]')?.textContent.includes('不属于所选任务')`, 'wrong-session progress is refused');
+      assert.equal(await evaluate(`!!document.querySelector('[data-inplace-reset-model-status]')`), false);
+    } else {
+      await until(`!!document.querySelector('[data-inplace-reset-progress]')`, 'running progress before closing');
+    }
+    const taskId = simulatedTask.taskId;
+    await closePreview();
+    const count = requests.filter((request) => request.taskId === taskId).length;
+    await delay(1200);
+    assert.equal(requests.filter((request) => request.taskId === taskId).length, count, 'a closed dialog must stop polling');
+    wrongProgressSession = false;
+  }
+  evidence.checks.push('closing the dialog stops progress polling', 'progress from another session is rejected without displaying a candidate');
 
   for (const value of [
     { ok: true, phase: 'HALTED_LIVE', reason: '宿主仍持有会话，未执行重置' },
@@ -413,7 +461,7 @@ try {
 } catch (error) {
   await mkdir(out, { recursive: true });
   try {
-    const snapshot = await evaluate(`JSON.stringify({ body: document.body.innerText.slice(0, 9000), plugin: window.__DSH_BOOT__?.entries?.filter(entry => entry.id.includes('inplace-reset')), menus: [...document.querySelectorAll('[role="menu"], [role="menuitem"]')].map(el => ({ role: el.getAttribute('role'), text: el.innerText })) })`);
+    const snapshot = await evaluate(`JSON.stringify({ dialog: document.querySelector('[role="dialog"]')?.innerText, body: document.body.innerText.slice(0, 2000), plugin: window.__DSH_BOOT__?.entries?.filter(entry => entry.id.includes('inplace-reset')), menus: [...document.querySelectorAll('[role="menu"], [role="menuitem"]')].map(el => ({ role: el.getAttribute('role'), text: el.innerText })) })`);
     await writeFile(join(out, 'failure.json'), JSON.stringify({ ...JSON.parse(snapshot), diagnostics }));
     const screenshot = await send('Page.captureScreenshot', { format: 'png' });
     await writeFile(join(out, 'failure.png'), Buffer.from(screenshot.data, 'base64'));

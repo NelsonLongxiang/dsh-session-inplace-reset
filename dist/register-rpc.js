@@ -1,6 +1,7 @@
 import { assertModelChoice } from "./model-handoff.js";
 import { assertSessionId } from "./session-id.js";
 import { optionalAgentPreset } from "./agent-preset.js";
+import { assertPreviewTask } from "./model-previews.js";
 /** Own all current endpoints through a separate contribution; cached older namespaces remain untouched. */
 export async function registerSessionRpc(ctx, artifact) {
     const dry = artifact.invocations.find((item) => item.method === 'sessionResetDryRun');
@@ -8,6 +9,12 @@ export async function registerSessionRpc(ctx, artifact) {
         throw new Error('缺少已核验的会话参数 codec，未注册新接口');
     const packageKey = `${artifact.package}/preview`;
     const preview = { ...dry, id: `${packageKey}#sessionReset/sessionResetModelPreview`, method: 'sessionResetModelPreview', result: { ...dry.result, typeSymbol: `${packageKey}/types#ModelPreviewValue` } };
+    const start = { ...preview, id: `${packageKey}#sessionReset/sessionResetModelPreviewStart`, method: 'sessionResetModelPreviewStart', result: { ...dry.result, typeSymbol: `${packageKey}/types#PreviewTaskView` } };
+    const progressCodec = {
+        mode: 'strict', typeSymbol: `${packageKey}/types#PreviewTaskRequest`, create: () => progressCodec.schema,
+        schema: { parse(value) { assertPreviewTask(value); return { sessionId: value.sessionId, taskId: value.taskId }; } },
+    };
+    const progress = { ...start, id: `${packageKey}#sessionReset/sessionResetModelPreviewStatus`, method: 'sessionResetModelPreviewStatus', parameters: [{ name: 'request', wire: 'request', source: 'json', codec: progressCodec }] };
     const saveCodec = {
         mode: 'strict', typeSymbol: `${packageKey}/types#EvaluationSettingsWrite`,
         create: () => saveCodec.schema,
@@ -41,6 +48,6 @@ export async function registerSessionRpc(ctx, artifact) {
     };
     const modelExecute = { ...dry, id: `${packageKey}#sessionReset/sessionResetExecuteModel`, method: 'sessionResetExecuteModel', parameters: [{ name: 'request', wire: 'request', source: 'json', codec: modelRequestCodec }], result: { ...dry.result, typeSymbol: `${packageKey}/types#ExecuteValue` } };
     const base = artifact.invocations.filter((item) => ['sessionResetDryRun', 'sessionResetExecute', 'sessionResetResume'].includes(item.method)).map((item) => ({ ...item, id: `${packageKey}#sessionReset/${item.method}` }));
-    const manifest = { ...artifact, package: packageKey, schemas: [], invocations: [...base, preview, read, save, recovery, recoveries, modelExecute] };
+    const manifest = { ...artifact, package: packageKey, schemas: [], invocations: [...base, preview, start, progress, read, save, recovery, recoveries, modelExecute] };
     ctx.effect(() => ctx.get('typert').register(manifest), 'session-reset: owned RPC');
 }

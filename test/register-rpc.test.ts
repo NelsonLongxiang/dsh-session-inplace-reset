@@ -29,7 +29,7 @@ test('preview contribution uses a real exported module key and removes only its 
   assert.equal(manifest.exports['./preview'], './dist/register-rpc.js');
   await registerSessionRpc(runtime.ctx, artifact());
   const preview = runtime.owners.get(`${artifact().package}/preview`)!;
-  assert.deepEqual(preview.invocations.map((item) => item.method), ['sessionResetDryRun', 'sessionResetExecute', 'sessionResetResume', 'sessionResetModelPreview', 'sessionResetEvaluationSettings', 'sessionResetSaveEvaluationSettings', 'sessionResetRecoveryStatus', 'sessionResetRecoveries', 'sessionResetExecuteModel']);
+  assert.deepEqual(preview.invocations.map((item) => item.method), ['sessionResetDryRun', 'sessionResetExecute', 'sessionResetResume', 'sessionResetModelPreview', 'sessionResetModelPreviewStart', 'sessionResetModelPreviewStatus', 'sessionResetEvaluationSettings', 'sessionResetSaveEvaluationSettings', 'sessionResetRecoveryStatus', 'sessionResetRecoveries', 'sessionResetExecuteModel']);
   runtime.dispose();
   assert.equal(runtime.owners.has(artifact().package), true);
   assert.equal(runtime.owners.has(preview.package), false);
@@ -38,7 +38,7 @@ test('preview contribution uses a real exported module key and removes only its 
 test('cold automatic-loader metadata coexists with all owned RPC endpoints', async () => {
   const runtime = fixture(false);
   await registerSessionRpc(runtime.ctx, artifact());
-  assert.equal(runtime.owners.get(`${artifact().package}/preview`)!.invocations.length, 9);
+  assert.equal(runtime.owners.get(`${artifact().package}/preview`)!.invocations.length, 11);
 });
 
 test('cached base endpoints remain owned by the host while preview activates', async () => {
@@ -88,6 +88,17 @@ test('model execution has a distinct endpoint and cannot accept an unbound seed'
   assert.throws(() => parameters[0].codec.schema.parse({ ...request, agentPreset: '' }));
   assert.throws(() => parameters[0].codec.schema.parse({ ...request, agentPreset: null }));
   assert.deepEqual(parameters[0].codec.schema.parse({ ...request, handoff: { arbitrary: true } }), request);
+});
+
+test('progress reads use a strict task and session pair and cannot carry a reset seed', async () => {
+  const runtime = fixture();
+  await registerSessionRpc(runtime.ctx, artifact());
+  const progress = runtime.owners.get(`${artifact().package}/preview`)!.invocations.find((item) => item.method === 'sessionResetModelPreviewStatus')!;
+  const parameters = progress.parameters as { codec: { schema: { parse(value: unknown): unknown } } }[];
+  const request = { sessionId: 'session-11111111-1111-1111-1111-111111111111', taskId: '22222222-2222-2222-2222-222222222222' };
+  assert.deepEqual(parameters[0].codec.schema.parse({ ...request, handoff: { arbitrary: true } }), request);
+  assert.throws(() => parameters[0].codec.schema.parse({ ...request, taskId: 'invalid' }));
+  assert.throws(() => parameters[0].codec.schema.parse({ ...request, sessionId: '../invalid' }));
 });
 
 test('an existing preview owner is not overwritten', async () => {

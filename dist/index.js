@@ -72,6 +72,7 @@ export async function apply(ctx, config) {
     let modelPreviews;
     const evaluationSettings = createEvaluationSettings(ctx.get('credentials'), ctx.profileContext?.name ?? 'default', () => modelPreviews?.clear());
     modelPreviews = createModelPreviews(ctx, config, hostRequire, evaluationSettings);
+    ctx.effect(() => () => modelPreviews.dispose(), 'session-reset: preview workers');
     ctx.effect(() => () => lifecycle.dispose(), 'session-reset: lifecycle guards');
     const methods = {
         async sessionResetEvaluationSettings() { return evaluationSettings.describe(); },
@@ -95,6 +96,11 @@ export async function apply(ctx, config) {
             assertSessionId(sessionId);
             return modelPreviews.preview(sessionId);
         },
+        async sessionResetModelPreviewStart(sessionId) {
+            assertSessionId(sessionId);
+            return modelPreviews.start(sessionId);
+        },
+        async sessionResetModelPreviewStatus(request) { return modelPreviews.status(request); },
         async sessionResetExecute(request) {
             return executeReset(ctx, ledger, lifecycle, home, request, { ...config, buildHandoff });
         },

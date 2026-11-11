@@ -11,7 +11,7 @@
     "allowImportingTsExtensions": true,
     "erasableSyntaxOnly": true,
     "types": ["node", "react"],
-    "lib": ["ES2023", "DOM"]
+    "lib": ["ES2024", "DOM"]
   },
   "include": ["lib/**/*.ts", "src/**/*.ts", "test/**/*.ts", "tools/**/*.ts"]
 }
