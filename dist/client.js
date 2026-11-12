@@ -48,6 +48,7 @@ window.__ModuleLoader__.load({
       const [presetAttempt, setPresetAttempt] = React.useState(0);
       const [model, setModel] = React.useState                    (null);
       const [continuationGoal, setContinuationGoal] = React.useState('');
+      const [selectedTopics, setSelectedTopics] = React.useState          ([]);
       const [selectedModel, setSelectedModel] = React.useState                    (null);
       const [modelLoading, setModelLoading] = React.useState(false);
       const [modelError, setModelError] = React.useState               (null);
@@ -68,7 +69,7 @@ window.__ModuleLoader__.load({
       React.useEffect(() => () => { modelRequest.current?.abort(); topicRequest.current?.abort(); }, []);
       const shortId = sessionId.slice(8, 16);
       const close = () => { if (!executing && !recovering) onClose(); };
-      const useGoal = (value        ) => { setContinuationGoal(value); setModel(null); setSelectedModel(null); setModelTask(null); setConfirmText(''); };
+      const useGoal = (value        , topicIds           = []) => { setContinuationGoal(value); setSelectedTopics(topicIds); setModel(null); setSelectedModel(null); setModelTask(null); setConfirmText(''); };
       const acceptTopics = (value               , taskId         ) => {
         const p = value?.progress;
         if (value?.sessionId !== sessionId || taskId && value.taskId !== taskId || !/^[a-f0-9-]{36}$/i.test(value.taskId ?? '') || typeof value.running !== 'boolean' || !value.model || typeof value.model.provider !== 'string' || !value.model.provider || typeof value.model.model !== 'string' || !value.model.model || !['session', 'default'].includes(value.modelSource) || !p || !Object.hasOwn(topicPhases, p.phase) || !(['completedBatches', 'totalBatches', 'running', 'concurrency', 'requests']         ).every((key) => Number.isSafeInteger(p[key]) && p[key] >= 0) || p.completedBatches > p.totalBatches || p.running > p.concurrency || p.concurrency < 1 || p.concurrency > 4) throw new Error('主题分析数据不完整或不属于所选会话');
@@ -80,7 +81,7 @@ window.__ModuleLoader__.load({
       const previewTopics = async () => {
         if (!dry || executing || recovering || modelLoading || topicLoading) return;
         const controller = new AbortController(); topicRequest.current = controller;
-        setTopicLoading(true); setTopicError(null); setTopicTask(null); setConfirmText('');
+        setTopicLoading(true); setTopicError(null); setTopicTask(null); setSelectedTopics([]); setConfirmText('');
         try {
           let task = acceptTopics(await rpc               ('sessionResetTopicPreviewStart', { sessionId }, controller.signal));
           const taskId = task.taskId;
@@ -95,15 +96,20 @@ window.__ModuleLoader__.load({
         } catch (reason) { if (!controller.signal.aborted) setTopicError(errorMessage(reason)); }
         finally { if (!controller.signal.aborted) setTopicLoading(false); }
       };
-      const chooseTopic = async (topicId        ) => {
+      const chooseTopic = async (topicId        , checked         ) => {
         if (!topicTask || topicLoading || modelLoading || executing || recovering) return;
         const controller = new AbortController(); topicRequest.current = controller;
         setTopicLoading(true); setTopicError(null);
         try {
           const value = acceptTopics(await rpc               ('sessionResetTopicPreviewStatus', { request: { sessionId, taskId: topicTask.taskId } }, controller.signal), topicTask.taskId);
-          const topic = value.report?.status === 'ready' ? value.report.topics.find((item) => item.id === topicId) : undefined;
-          if (!topic || value.running) throw new Error('候选主题已变化，请重新分析');
-          if (!controller.signal.aborted) { setTopicTask(value); useGoal(topic.goal); }
+          const topics = value.report?.status === 'ready' ? value.report.topics : [];
+          if (!topics.some((item) => item.id === topicId) || value.running) throw new Error('候选主题已变化，请重新分析');
+          const wanted = new Set(checked ? [...selectedTopics, topicId] : selectedTopics.filter((id) => id !== topicId));
+          const picked = topics.filter((item) => wanted.has(item.id));
+          if (picked.length !== wanted.size) throw new Error('部分已选主题已变化，请重新分析');
+          const goal = picked.length === 1 ? picked[0].goal : picked.map((item, index) => `${index + 1}. ${item.title}\n${item.goal}`).join('\n\n');
+          if (goal.length > 2000) throw new Error('合并目标超过2000字，请减少主题或手动编辑；未截断目标');
+          if (!controller.signal.aborted) { setTopicTask(value); useGoal(goal, picked.map((item) => item.id)); }
         } catch (reason) { if (!controller.signal.aborted) setTopicError(errorMessage(reason)); }
         finally { if (!controller.signal.aborted) setTopicLoading(false); }
       };
@@ -296,15 +302,16 @@ window.__ModuleLoader__.load({
                 topicTask.report.status === 'unavailable' && h('p', { role: 'alert' }, `主题分析未成功，暂无可选主题。${topicTask.report.note}`),
                 topicTask.report.status === 'ready' && !topicTask.report.topics.length && h('p', { role: 'status' }, '本次未识别到有依据的主题，可直接填写续接目标。'),
                 topicTask.report.topics.length > 0 && h('fieldset', { ref: topicOptions, 'data-inplace-reset-topic-options': true, disabled: topicLoading || modelLoading || executing || recovering, style: { margin: '12px 0', padding: 8, border: '1px solid var(--dsw-alias-border-l3)', borderRadius: 6 } },
-                  h('legend', { 'data-inplace-reset-topic-count': topicTask.report.topics.length }, `已生成 ${topicTask.report.topics.length} 个候选主题，请选择`),
+                  h('legend', { 'data-inplace-reset-topic-count': topicTask.report.topics.length }, `已生成 ${topicTask.report.topics.length} 个候选主题，可多选`),
                   topicTask.report.topics.map((topic, index) => h('label', { key: topic.id, 'data-inplace-reset-topic-option': topic.id, style: { display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 4px', cursor: 'pointer', overflowWrap: 'anywhere' } },
-                    h('input', { type: 'radio', name: `inplace-reset-topic-${shortId}`, value: topic.id, checked: continuationGoal === topic.goal, onChange: () => chooseTopic(topic.id), style: { marginTop: 4, flexShrink: 0 } }),
+                    h('input', { type: 'checkbox', value: topic.id, checked: selectedTopics.includes(topic.id), onChange: (event                                          ) => chooseTopic(topic.id, event.target.checked), style: { marginTop: 4, flexShrink: 0 } }),
                     h('span', null, `${index + 1}. ${topic.title}`),
                   )),
                 ),
+                topicTask.report.topics.length > 0 && h('p', { 'data-inplace-reset-selected-topic-count': selectedTopics.length, style: { fontSize: 12 } }, `已选 ${selectedTopics.length} 个主题；按列表顺序合并到续接目标。取消全部恢复默认范围，手动编辑目标会清除勾选。`),
                 h('small', null, `主题材料 ${topicTask.report.coverage.assessed} / ${topicTask.report.coverage.total} 个片段`),
                 !topicTask.report.coverage.complete && h('p', null, '部分主题材料未覆盖，候选不代表完整会话主题。'),
-                topicTask.report.topics.filter((topic) => continuationGoal === topic.goal).map((topic) => h('article', { key: topic.id, 'data-inplace-reset-topic': topic.id, style: { paddingTop: 10, marginTop: 10, borderTop: '1px solid var(--dsw-alias-border-l3)' } },
+                topicTask.report.topics.filter((topic) => selectedTopics.includes(topic.id)).map((topic) => h('article', { key: topic.id, 'data-inplace-reset-topic': topic.id, style: { paddingTop: 10, marginTop: 10, borderTop: '1px solid var(--dsw-alias-border-l3)' } },
                   h('b', null, `已选：${topic.title}`), h('p', null, topic.goal),
                   h('details', null, h('summary', null, '查看主题来源原文'), topic.evidence.map((item, index) => h('div', { key: index }, h('small', null, `事件 #${item.seq} · ${item.historical ? '历史引用' : item.role}${item.truncated ? ' · 原文节选' : ''}`), h('blockquote', { style: { margin: '6px 0', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 12 } }, item.quote)))),
                 )),
@@ -312,7 +319,7 @@ window.__ModuleLoader__.load({
               ),
             ),
             h('label', { htmlFor: 'inplace-reset-continuation-goal' }, '续接目标'),
-            h('textarea', { id: 'inplace-reset-continuation-goal', value: continuationGoal, maxLength: 2000, rows: 2, placeholder: '留空：接续全部未完成任务，保留持续约束与有效纠正', disabled: executing || recovering || modelLoading || topicLoading, onChange: (event                                             ) => useGoal(event.target.value), style: { display: 'block', width: '100%', boxSizing: 'border-box', marginTop: 6, padding: 8, color: 'inherit', background: 'var(--dsw-alias-bg-base)', border: '1px solid var(--dsw-alias-border-l3)', borderRadius: 6 } }),
+            h('textarea', { id: 'inplace-reset-continuation-goal', value: continuationGoal, maxLength: 2000, rows: selectedTopics.length > 1 ? 6 : 2, placeholder: '留空：接续全部未完成任务，保留持续约束与有效纠正', disabled: executing || recovering || modelLoading || topicLoading, onChange: (event                                             ) => useGoal(event.target.value), style: { display: 'block', width: '100%', boxSizing: 'border-box', marginTop: 6, padding: 8, color: 'inherit', background: 'var(--dsw-alias-bg-base)', border: '1px solid var(--dsw-alias-border-l3)', borderRadius: 6 } }),
             h('p', { style: { fontSize: 12 } }, '此目标决定模型筛选范围；其他主题的未完成任务和持续约束也会保留。修改目标后需重新预览，筛选目标不增加操作授权。'),
             h(Button, { variant: 'outline', disabled: loading || executing || recovering || modelLoading || topicLoading, onClick: previewModel }, modelLoading ? '正在筛选并核对…' : '模型筛选预览'),
             h('p', { style: { fontSize: 12 } }, '预览先不修改会话。通过检查后可明确选用这份候选；未选择时使用近期采样。'),

@@ -67,7 +67,7 @@ socket.addEventListener('message', ({ data }) => {
   } else if (message.method === 'Fetch.requestPaused') {
     const { requestId, request } = message.params;
     const body = JSON.parse(request.postData);
-    requests.push({ method: body.method, sessionId: body.payload.args.sessionId ?? body.payload.args.request?.sessionId, modelReportId: body.payload.args.request?.modelReportId, sourceHash: body.payload.args.request?.sourceHash, agentPreset: body.payload.args.request?.agentPreset, taskId: body.payload.args.request?.taskId });
+    requests.push({ method: body.method, sessionId: body.payload.args.sessionId ?? body.payload.args.request?.sessionId, modelReportId: body.payload.args.request?.modelReportId, sourceHash: body.payload.args.request?.sourceHash, agentPreset: body.payload.args.request?.agentPreset, taskId: body.payload.args.request?.taskId, continuationGoal: body.payload.args.request?.continuationGoal });
     if (recoveryMode && (body.method.endsWith('/sessionResetRecoveries') || body.method.endsWith('/sessionResetRecoveryStatus'))) {
       const value = { ...(body.payload.args.sessionId ? { sessionId: body.payload.args.sessionId } : {}), operations: [recoveryFixture], issues: [], warnings: [] };
       const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: true, value } });
@@ -292,11 +292,33 @@ try {
     await until(`!!document.querySelector('[data-inplace-reset-topic="${chosen}"]') && document.getElementById('inplace-reset-continuation-goal').value.length > 0`, 'requested real topic adopted into goal');
     assert.equal(await evaluate(`document.querySelector('[data-inplace-reset-topic-option="${chosen}"] input').checked`), true);
     await captureTopicOptions(required, 'second-topic-selected');
+    let selectedIds = [chosen];
+    let mergedGoal = await evaluate(`document.getElementById('inplace-reset-continuation-goal').value`);
+    if (required > 1) {
+      for (const option of options.filter((item) => item.id !== chosen)) {
+        await evaluate(`document.querySelector('[data-inplace-reset-topic-option="${option.id}"] input').click()`);
+        await until(`!!document.querySelector('[data-inplace-reset-topic="${option.id}"]') && [...document.querySelectorAll('[data-inplace-reset-topic-option] input:checked')].length === ${selectedIds.length + 1}`, 'additional topic remains selected with previous topics');
+        selectedIds.push(option.id);
+      }
+      const selected = await captureTopicOptions(required, 'multiple-topics-selected');
+      assert.equal(selected.filter((item) => item.checked).length, options.length);
+      selectedIds = selected.filter((item) => item.checked).map((item) => item.id);
+      mergedGoal = await evaluate(`document.getElementById('inplace-reset-continuation-goal').value`);
+      assert.ok(mergedGoal.length <= 2000);
+      const titles = options.map((option) => option.title.replace(/^\d+\.\s*/, ''));
+      assert.ok(titles.every((title) => mergedGoal.includes(title)));
+      assert.ok(titles.slice(1).every((title, index) => mergedGoal.indexOf(titles[index]) < mergedGoal.indexOf(title)), 'Merged goal follows display order rather than click order');
+      await evaluate(`document.querySelector('[data-inplace-reset-topic-option="${chosen}"] input').click()`);
+      await until(`!document.querySelector('[data-inplace-reset-topic="${chosen}"]') && [...document.querySelectorAll('[data-inplace-reset-topic-option] input:checked')].length === ${options.length - 1}`, 'deselecting one topic preserves the remaining selection');
+      const afterRemoval = await evaluate(`document.getElementById('inplace-reset-continuation-goal').value`);
+      assert.ok(!afterRemoval.includes(titles[required > 1 ? 1 : 0]));
+      await captureTopicOptions(required, 'one-topic-deselected');
+    }
     assert.equal(await evaluate(`document.getElementById('inplace-reset-confirm').value`), '');
     assert.equal(await evaluate(`document.querySelector('[data-inplace-reset-stats]').textContent`), before);
     assert.equal(requests.some((request) => /\/sessionResetExecute(?:Model)?$/.test(request.method)), false);
-    await writeFile(join(out, 'result.json'), JSON.stringify({ sessionId: permittedTopicId, badge, options, chosenTopic: chosen, requests, checks: ['all required real topic options simultaneously visible', 'second option can be selected when multiple topics exist', 'adoption only fills editable goal', 'confirmation remains empty', 'source statistics unchanged', 'no reset requested'] }, null, 2), { flag: 'wx' });
-    console.log(`PASS real session-model topic UI: ${options.length} visible options, selected ${chosen}; ${badge}; evidence: ${out}`);
+    await writeFile(join(out, 'result.json'), JSON.stringify({ sessionId: permittedTopicId, badge, options, chosenTopic: chosen, selectedTopicIds: selectedIds, mergedGoal, requests, checks: ['all required real topic options simultaneously visible', 'multiple topics remain checked together', 'merged goals preserve all selected topics in display order', 'deselecting one preserves the remaining topics', 'adoption only fills editable goal', 'confirmation remains empty', 'source statistics unchanged', 'no reset requested'] }, null, 2), { flag: 'wx' });
+    console.log(`PASS real session-model topic UI: ${options.length} visible options, selected together ${selectedIds.join(',')}; ${badge}; evidence: ${out}`);
   } else if (process.argv.includes('--model-preview')) {
     await evaluate(`document.querySelectorAll('button').forEach(button => { if (/^展开其余 \\d+ 个会话$|^Show \\d+ more sessions$/.test(button.textContent.trim())) button.click(); })`);
     await until(`[...document.querySelectorAll('[data-row-key^="session:"]')].some(row => row.innerText.includes('[reset-test]'))`, 'labelled test session after expanding the list', 5_000);
@@ -460,10 +482,39 @@ try {
   await evaluate(`document.querySelector('[data-inplace-reset-topic="topic-1"] details').open = true; document.querySelector('[data-inplace-reset-topics]').scrollIntoView({ block: 'start' })`);
   const topicShot = await send('Page.captureScreenshot', { format: 'png' });
   await writeFile(join(out, 'session-model-topics.png'), Buffer.from(topicShot.data, 'base64'));
+  await captureTopicOptions(2, 'single-topic-selected');
+  const topicGoalA = '继续实现上下文重置与候选主题分析';
+  const topicGoalB = '继续库存差异核对并保留业务边界';
+  await evaluate(`document.querySelector('[data-inplace-reset-topic-option="topic-2"] input').click()`);
+  await until(`document.querySelectorAll('[data-inplace-reset-topic-option] input:checked').length === 2 && document.querySelector('[data-inplace-reset-selected-topic-count]').dataset.inplaceResetSelectedTopicCount === '2'`, 'two topics selected together');
+  const combinedGoal = await evaluate(`document.getElementById('inplace-reset-continuation-goal').value`);
+  assert.ok(combinedGoal.includes(topicGoalA) && combinedGoal.includes(topicGoalB));
+  assert.ok(combinedGoal.indexOf(topicGoalA) < combinedGoal.indexOf(topicGoalB));
+  await captureTopicOptions(2, 'both-topics-selected');
+  simulatedModel = { reportId: crypto.randomUUID(), sourceHash: 'a'.repeat(64), status: 'pending', mode: 'shadow', applied: false, auditComplete: true, coverage: { total: 128, assessed: 128, complete: true }, selected: [{ id: 'c0', seq: 0, role: 'user', sourceKind: 'user', text: '组合目标验证，保持原ID', retention: 'pass', superseded: 'fail' }], checks: ['constraints', 'state', 'faithful'].map((key) => ({ key, probability: 0.5, outcome: 'pending' })) };
+  await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(button => button.textContent === '模型筛选预览').click()`);
+  await until(`document.querySelector('[data-inplace-reset-model-status]')?.dataset.inplaceResetModelStatus === 'pending'`, 'combined goal reaches the evaluation preview');
+  assert.equal(requests.findLast((request) => request.method.endsWith('/sessionResetModelPreviewStartWithGoal')).continuationGoal, combinedGoal);
+  assert.equal(await evaluate(`document.querySelector('[data-inplace-reset-goal]').textContent`), combinedGoal);
+  await evaluate(`(() => { const input = document.getElementById('inplace-reset-confirm'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(second.id.slice(8, 16))}); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await evaluate(`document.querySelector('[data-inplace-reset-topic-option="topic-2"] input').click()`);
+  await until(`document.getElementById('inplace-reset-continuation-goal').value === ${JSON.stringify(topicGoalA)} && document.querySelectorAll('[data-inplace-reset-topic-option] input:checked').length === 1`, 'removing one topic restores the remaining goal');
+  assert.equal(await evaluate(`!!document.querySelector('[data-inplace-reset-model-status]')`), false);
+  assert.equal(await evaluate(`document.getElementById('inplace-reset-confirm').value`), '');
+  await evaluate(`document.querySelector('[data-inplace-reset-topic-option="topic-1"] input').click()`);
+  await until(`document.querySelectorAll('[data-inplace-reset-topic-option] input:checked').length === 0 && document.getElementById('inplace-reset-continuation-goal').value === ''`, 'clearing all topics restores the default continuation range');
+  await evaluate(`document.querySelector('[data-inplace-reset-topic-option="topic-2"] input').click()`);
+  await until(`document.querySelector('[data-inplace-reset-selected-topic-count]').dataset.inplaceResetSelectedTopicCount === '1' && document.getElementById('inplace-reset-continuation-goal').value === ${JSON.stringify(topicGoalB)}`, 'second topic selected first');
+  await evaluate(`document.querySelector('[data-inplace-reset-topic-option="topic-1"] input').click()`);
+  await until(`document.querySelector('[data-inplace-reset-selected-topic-count]').dataset.inplaceResetSelectedTopicCount === '2' && document.getElementById('inplace-reset-continuation-goal').value === ${JSON.stringify(combinedGoal)}`, 'first topic added without replacing second');
+  assert.equal(await evaluate(`document.getElementById('inplace-reset-continuation-goal').value`), combinedGoal);
+  const editedGoal = `${combinedGoal}\n保持只读验证。`;
+  await evaluate(`(() => { const input = document.getElementById('inplace-reset-continuation-goal'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, ${JSON.stringify(editedGoal)}); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await until(`document.querySelectorAll('[data-inplace-reset-topic-option] input:checked').length === 0`, 'manual editing clears the topic selection basis');
   staleTopic = true;
   await evaluate(`document.querySelector('[data-inplace-reset-topic-option="topic-2"] input').click()`);
   await until(`document.querySelector('[data-inplace-reset-topics] [role="alert"]')?.textContent.includes('模型已变化')`, 'stale topic refused before adoption');
-  assert.equal(await evaluate(`document.getElementById('inplace-reset-continuation-goal').value`), '继续实现上下文重置与候选主题分析');
+  assert.equal(await evaluate(`document.getElementById('inplace-reset-continuation-goal').value`), editedGoal);
   await closePreview(); simulatedTopics = false; staleTopic = false;
   simulatedTopics = true; simulatedTopicUnavailable = true;
   await openPreview(second.id);
@@ -474,7 +525,7 @@ try {
   assert.equal(await evaluate(`document.getElementById('inplace-reset-continuation-goal').value`), '');
   await closePreview(); simulatedTopics = false; simulatedTopicUnavailable = false;
   evidence.checks.push('model failure explicitly reports no available topics without phantom choices');
-  evidence.checks.push('all generated topic choices simultaneously visible as radio options', 'session model and reasoning effort shown for topic analysis', 'candidates show source quotes before choosing a goal', 'adopting a topic only fills the goal and clears confirmation', 'stale source or model refuses an old topic');
+  evidence.checks.push('all generated topic choices simultaneously visible as checkbox options', 'multiple topics combine into the exact evaluation goal', 'deselection clears stale reports and confirmation', 'clearing all topics restores default range', 'manual editing clears checkboxes without losing the edited goal', 'display order is stable regardless of click order', 'session model and reasoning effort shown for topic analysis', 'candidates show source quotes before choosing a goal', 'adopting a topic only fills the goal and clears confirmation', 'stale source or model refuses an old topic');
 
   for (const status of ['pass', 'pending', 'fail', 'unavailable']) {
     await openPreview(second.id);
