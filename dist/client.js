@@ -57,6 +57,9 @@ window.__ModuleLoader__.load({
       const [topicLoading, setTopicLoading] = React.useState(false);
       const [topicError, setTopicError] = React.useState               (null);
       const topicRequest = React.useRef                        (null);
+      const topicOptions = React.useRef                            (null);
+      const readyTopics = topicTask?.report?.status === 'ready' ? topicTask.taskId : '';
+      React.useEffect(() => { if (readyTopics) topicOptions.current?.scrollIntoView({ block: 'nearest' }); }, [readyTopics]);
       const [recovery, setRecovery] = React.useState                     (null);
       const [recoveryAttempt, setRecoveryAttempt] = React.useState(0);
       const [recoveryError, setRecoveryError] = React.useState               (null);
@@ -290,14 +293,22 @@ window.__ModuleLoader__.load({
               ),
               topicError && h('p', { role: 'alert' }, topicError),
               topicTask?.report && h('div', { 'data-inplace-reset-topic-result': topicTask.report.status },
-                h('p', { style: { fontSize: 12 } }, `主题材料 ${topicTask.report.coverage.assessed} / ${topicTask.report.coverage.total} 个片段；使用 ${modelLabel(topicTask.report.model)}`),
+                topicTask.report.status === 'unavailable' && h('p', { role: 'alert' }, `主题分析未成功，暂无可选主题。${topicTask.report.note}`),
+                topicTask.report.status === 'ready' && !topicTask.report.topics.length && h('p', { role: 'status' }, '本次未识别到有依据的主题，可直接填写续接目标。'),
+                topicTask.report.topics.length > 0 && h('fieldset', { ref: topicOptions, 'data-inplace-reset-topic-options': true, disabled: topicLoading || modelLoading || executing || recovering, style: { margin: '12px 0', padding: 8, border: '1px solid var(--dsw-alias-border-l3)', borderRadius: 6 } },
+                  h('legend', { 'data-inplace-reset-topic-count': topicTask.report.topics.length }, `已生成 ${topicTask.report.topics.length} 个候选主题，请选择`),
+                  topicTask.report.topics.map((topic, index) => h('label', { key: topic.id, 'data-inplace-reset-topic-option': topic.id, style: { display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 4px', cursor: 'pointer', overflowWrap: 'anywhere' } },
+                    h('input', { type: 'radio', name: `inplace-reset-topic-${shortId}`, value: topic.id, checked: continuationGoal === topic.goal, onChange: () => chooseTopic(topic.id), style: { marginTop: 4, flexShrink: 0 } }),
+                    h('span', null, `${index + 1}. ${topic.title}`),
+                  )),
+                ),
+                h('small', null, `主题材料 ${topicTask.report.coverage.assessed} / ${topicTask.report.coverage.total} 个片段`),
                 !topicTask.report.coverage.complete && h('p', null, '部分主题材料未覆盖，候选不代表完整会话主题。'),
-                h('p', { style: { fontSize: 12 } }, topicTask.report.note),
-                topicTask.report.topics.map((topic) => h('article', { key: topic.id, 'data-inplace-reset-topic': topic.id, style: { paddingTop: 10, marginTop: 10, borderTop: '1px solid var(--dsw-alias-border-l3)' } },
-                  h('b', null, topic.title), h('p', null, topic.goal),
-                  h(Button, { variant: 'outline', disabled: topicLoading || modelLoading || executing || recovering, 'aria-pressed': continuationGoal === topic.goal, onClick: () => chooseTopic(topic.id) }, continuationGoal === topic.goal ? '已采用此主题' : '采用此主题'),
-                  h('details', null, h('summary', null, '查看主题原文依据'), topic.evidence.map((item, index) => h('div', { key: index }, h('small', null, `事件 #${item.seq} · ${item.historical ? '历史引用' : item.role}`), h('blockquote', { style: { margin: '6px 0', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 12 } }, item.quote)))),
+                topicTask.report.topics.filter((topic) => continuationGoal === topic.goal).map((topic) => h('article', { key: topic.id, 'data-inplace-reset-topic': topic.id, style: { paddingTop: 10, marginTop: 10, borderTop: '1px solid var(--dsw-alias-border-l3)' } },
+                  h('b', null, `已选：${topic.title}`), h('p', null, topic.goal),
+                  h('details', null, h('summary', null, '查看主题来源原文'), topic.evidence.map((item, index) => h('div', { key: index }, h('small', null, `事件 #${item.seq} · ${item.historical ? '历史引用' : item.role}${item.truncated ? ' · 原文节选' : ''}`), h('blockquote', { style: { margin: '6px 0', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 12 } }, item.quote)))),
                 )),
+                h('details', { style: { marginTop: 8 } }, h('summary', null, '查看分析范围与说明'), h('p', { style: { fontSize: 12 } }, topicTask.report.note)),
               ),
             ),
             h('label', { htmlFor: 'inplace-reset-continuation-goal' }, '续接目标'),

@@ -31,6 +31,7 @@ let simulatedModel = null;
 let simulatedTask = null;
 let wrongProgressSession = false;
 let simulatedTopics = false;
+let simulatedTopicUnavailable = false;
 let simulatedTopicTask = null;
 let staleTopic = false;
 const realModelAllowed = process.argv.includes('--model-preview') || process.argv.includes('--use-model');
@@ -91,7 +92,7 @@ socket.addEventListener('message', ({ data }) => {
       const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: true, value: { ...simulatedTopicTask, running: true } } });
       void send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'content-type', value: 'application/json' }], body: Buffer.from(response).toString('base64') });
     } else if (body.method.endsWith('/sessionResetTopicPreviewStatus') && simulatedTopicTask?.taskId === body.payload.args.request?.taskId) {
-      const value = { ...simulatedTopicTask, running: false, progress: { ...simulatedTopicTask.progress, phase: 'complete', completedBatches: 2, running: 0 }, ...(staleTopic ? { error: '会话内容或模型已变化，请重新分析候选主题' } : { report: { sessionId: simulatedTopicTask.sessionId, cursor: 2, sourceHash: 'b'.repeat(64), model: simulatedTopicTask.model, modelSource: 'session', status: 'ready', note: '浏览器模拟主题；原文引用仅用于UI验收。', coverage: { total: 2, assessed: 2, complete: true, materialMessages: 2, sourceMessages: 10 }, requests: 2, peakConcurrency: 2, topics: [{ id: 'topic-1', title: '上下文重置与主题分析', goal: '继续实现上下文重置与候选主题分析', evidence: [{ id: 'c0', seq: 0, role: 'user', historical: false, quote: '继续实现上下文重置' }] }, { id: 'topic-2', title: '库存差异核对', goal: '继续库存差异核对并保留业务边界', evidence: [{ id: 'c1', seq: 1, role: 'user', historical: false, quote: '库存差异仍待核对' }] }] } }) };
+      const value = { ...simulatedTopicTask, running: false, progress: { ...simulatedTopicTask.progress, phase: 'complete', completedBatches: 2, running: 0 }, ...(staleTopic ? { error: '会话内容或模型已变化，请重新分析候选主题' } : { report: { sessionId: simulatedTopicTask.sessionId, cursor: 2, sourceHash: 'b'.repeat(64), model: simulatedTopicTask.model, modelSource: 'session', status: simulatedTopicUnavailable ? 'unavailable' : 'ready', note: '浏览器模拟主题；原文引用仅用于UI验收。', coverage: { total: 2, assessed: 2, complete: true, materialMessages: 2, sourceMessages: 10 }, requests: 2, peakConcurrency: 2, topics: simulatedTopicUnavailable ? [] : [{ id: 'topic-1', title: '上下文重置与主题分析', goal: '继续实现上下文重置与候选主题分析', evidence: [{ id: 'c0', seq: 0, role: 'user', historical: false, quote: '继续实现上下文重置' }] }, { id: 'topic-2', title: '库存差异核对', goal: '继续库存差异核对并保留业务边界', evidence: [{ id: 'c1', seq: 1, role: 'user', historical: false, quote: '库存差异仍待核对' }] }] } }) };
       const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: true, value } });
       void send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'content-type', value: 'application/json' }], body: Buffer.from(response).toString('base64') });
     } else if (/\/sessionResetTopicPreview/.test(body.method) && permittedTopicId && (body.payload.args.sessionId ?? body.payload.args.request?.sessionId) === permittedTopicId) {
@@ -186,6 +187,25 @@ async function closePreview() {
   await until(`!document.querySelector('[data-inplace-reset-session]')`, 'dialog closed');
 }
 
+async function captureTopicOptions(required, name) {
+  await evaluate(`document.querySelector('[data-inplace-reset-topic-options]').scrollIntoView({ block: 'center' })`);
+  const options = await evaluate(`(() => {
+    const frame = document.querySelector('[data-inplace-reset-session]').getBoundingClientRect();
+    return [...document.querySelectorAll('[data-inplace-reset-topic-option]')].map(row => {
+      const box = row.getBoundingClientRect(), input = row.querySelector('input');
+      return { id: row.dataset.inplaceResetTopicOption, title: row.textContent.trim(), checked: input.checked, top: box.top, bottom: box.bottom, visible: box.width > 0 && box.height > 0 && box.top >= Math.max(0, frame.top) && box.bottom <= Math.min(innerHeight, frame.bottom) && getComputedStyle(row).visibility !== 'hidden' };
+    });
+  })()`);
+  assert.ok(options.length >= required, `Expected at least ${required} topic choices`);
+  assert.equal(await evaluate(`Number(document.querySelector('[data-inplace-reset-topic-count]').dataset.inplaceResetTopicCount)`), options.length);
+  assert.ok(options.every((option) => option.visible), 'Every topic choice must be simultaneously inside the visible dialog viewport');
+  const clip = await evaluate(`(() => { const b = document.querySelector('[role="dialog"]').getBoundingClientRect(); return { x: b.x, y: b.y, width: b.width, height: b.height, scale: 1 }; })()`);
+  const screenshot = await send('Page.captureScreenshot', { format: 'png', clip });
+  await writeFile(join(out, `${name}.png`), Buffer.from(screenshot.data, 'base64'), { flag: 'wx' });
+  await writeFile(join(out, `${name}.json`), JSON.stringify(options, null, 2), { flag: 'wx' });
+  return options;
+}
+
 try {
   await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }); });
   await send('Page.enable');
@@ -257,24 +277,26 @@ try {
   } else if (topicOption >= 0) {
     assert.match(permittedTopicId, /^session-[a-f0-9-]{36}$/);
     await ensureRowVisible(permittedTopicId);
-    assert.equal(await evaluate(`document.querySelector('[data-row-key="session:${permittedTopicId}"]')?.innerText.includes('[reset-test]')`), true, 'Live topic UI verification uses a labelled test source');
+    if (!process.argv.includes('--read-only-source')) assert.equal(await evaluate(`document.querySelector('[data-row-key="session:${permittedTopicId}"]')?.innerText.includes('[reset-test]')`), true, 'Live topic UI verification uses a labelled test source');
     await openPreview(permittedTopicId);
     await until(`!!document.querySelector('[data-inplace-reset-stats]')`, 'topic source baseline');
     const before = await evaluate(`document.querySelector('[data-inplace-reset-stats]').textContent`);
     await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(button => button.textContent === '使用本会话模型分析主题').click()`);
-    await until(`document.querySelectorAll('[data-inplace-reset-topic]').length > 0 || !!document.querySelector('[data-inplace-reset-topics] [role="alert"]')`, 'real session-model topics', 160000);
+    const required = process.argv.includes('--require-multiple-topics') ? 2 : 1;
+    await until(`document.querySelectorAll('[data-inplace-reset-topic-option]').length >= ${required} || !!document.querySelector('[data-inplace-reset-topics] [role="alert"]')`, 'real session-model topics', 160000);
     assert.equal(await evaluate(`document.querySelector('[data-inplace-reset-topics] [role="alert"]')?.textContent`), undefined);
     const badge = await evaluate(`document.querySelector('[data-inplace-reset-topic-model]').textContent`);
-    await evaluate(`document.querySelector('[data-inplace-reset-topic] details').open = true; document.querySelector('[data-inplace-reset-topics]').scrollIntoView({ block: 'start' })`);
-    const screenshot = await send('Page.captureScreenshot', { format: 'png' });
-    await writeFile(join(out, 'real-session-model-topics.png'), Buffer.from(screenshot.data, 'base64'));
-    await evaluate(`document.querySelector('[data-inplace-reset-topic] button').click()`);
-    await until(`document.getElementById('inplace-reset-continuation-goal').value.length > 0`, 'real topic adopted into goal');
+    const options = await captureTopicOptions(required, 'multiple-topic-options');
+    const chosen = options[required > 1 ? 1 : 0].id;
+    await evaluate(`document.querySelector('[data-inplace-reset-topic-option="${chosen}"] input').click()`);
+    await until(`!!document.querySelector('[data-inplace-reset-topic="${chosen}"]') && document.getElementById('inplace-reset-continuation-goal').value.length > 0`, 'requested real topic adopted into goal');
+    assert.equal(await evaluate(`document.querySelector('[data-inplace-reset-topic-option="${chosen}"] input').checked`), true);
+    await captureTopicOptions(required, 'second-topic-selected');
     assert.equal(await evaluate(`document.getElementById('inplace-reset-confirm').value`), '');
     assert.equal(await evaluate(`document.querySelector('[data-inplace-reset-stats]').textContent`), before);
     assert.equal(requests.some((request) => /\/sessionResetExecute(?:Model)?$/.test(request.method)), false);
-    await writeFile(join(out, 'result.json'), JSON.stringify({ sessionId: permittedTopicId, badge, requests, checks: ['real session-model candidates shown', 'grounded quote visible', 'adoption only fills editable goal', 'confirmation remains empty', 'source statistics unchanged', 'no reset requested'] }, null, 2), { flag: 'wx' });
-    console.log(`PASS real session-model topic UI: ${badge}; evidence: ${out}`);
+    await writeFile(join(out, 'result.json'), JSON.stringify({ sessionId: permittedTopicId, badge, options, chosenTopic: chosen, requests, checks: ['all required real topic options simultaneously visible', 'second option can be selected when multiple topics exist', 'adoption only fills editable goal', 'confirmation remains empty', 'source statistics unchanged', 'no reset requested'] }, null, 2), { flag: 'wx' });
+    console.log(`PASS real session-model topic UI: ${options.length} visible options, selected ${chosen}; ${badge}; evidence: ${out}`);
   } else if (process.argv.includes('--model-preview')) {
     await evaluate(`document.querySelectorAll('button').forEach(button => { if (/^展开其余 \\d+ 个会话$|^Show \\d+ more sessions$/.test(button.textContent.trim())) button.click(); })`);
     await until(`[...document.querySelectorAll('[data-row-key^="session:"]')].some(row => row.innerText.includes('[reset-test]'))`, 'labelled test session after expanding the list', 5_000);
@@ -425,11 +447,12 @@ try {
   await openPreview(second.id);
   await until(`document.querySelector('[data-inplace-reset-stats]')?.textContent`, 'baseline before topic suggestions');
   await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(button => button.textContent === '使用本会话模型分析主题').click()`);
-  await until(`document.querySelectorAll('[data-inplace-reset-topic]').length === 2`, 'session-model topic candidates');
+  await until(`document.querySelectorAll('[data-inplace-reset-topic-option]').length === 2`, 'session-model topic candidates');
+  await captureTopicOptions(2, 'simulated-multiple-topic-options');
   const topicBadge = await evaluate(`document.querySelector('[data-inplace-reset-topic-model]').textContent`);
   assert.match(topicBadge, /session-fixture-provider \/ current-session-model · high/);
   await evaluate(`(() => { const input = document.getElementById('inplace-reset-confirm'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(second.id.slice(8, 16))}); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
-  await evaluate(`document.querySelector('[data-inplace-reset-topic="topic-1"] button').click()`);
+  await evaluate(`document.querySelector('[data-inplace-reset-topic-option="topic-1"] input').click()`);
   await until(`document.getElementById('inplace-reset-continuation-goal').value === '继续实现上下文重置与候选主题分析'`, 'topic selection fills editable continuation goal');
   assert.equal(await evaluate(`document.getElementById('inplace-reset-confirm').value`), '');
   assert.equal(await evaluate(`!!document.querySelector('[data-inplace-reset-selected-model]')`), false);
@@ -438,11 +461,20 @@ try {
   const topicShot = await send('Page.captureScreenshot', { format: 'png' });
   await writeFile(join(out, 'session-model-topics.png'), Buffer.from(topicShot.data, 'base64'));
   staleTopic = true;
-  await evaluate(`document.querySelector('[data-inplace-reset-topic="topic-2"] button').click()`);
+  await evaluate(`document.querySelector('[data-inplace-reset-topic-option="topic-2"] input').click()`);
   await until(`document.querySelector('[data-inplace-reset-topics] [role="alert"]')?.textContent.includes('模型已变化')`, 'stale topic refused before adoption');
   assert.equal(await evaluate(`document.getElementById('inplace-reset-continuation-goal').value`), '继续实现上下文重置与候选主题分析');
   await closePreview(); simulatedTopics = false; staleTopic = false;
-  evidence.checks.push('session model and reasoning effort shown for topic analysis', 'candidates show source quotes before choosing a goal', 'adopting a topic only fills the goal and clears confirmation', 'stale source or model refuses an old topic');
+  simulatedTopics = true; simulatedTopicUnavailable = true;
+  await openPreview(second.id);
+  await until(`!!document.querySelector('[data-inplace-reset-stats]')`, 'baseline for topic failure');
+  await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(button => button.textContent === '使用本会话模型分析主题').click()`);
+  await until(`document.querySelector('[data-inplace-reset-topics] [role="alert"]')?.textContent.includes('暂无可选主题')`, 'failed analysis explicitly explains zero choices');
+  assert.equal(await evaluate(`document.querySelectorAll('[data-inplace-reset-topic-option]').length`), 0);
+  assert.equal(await evaluate(`document.getElementById('inplace-reset-continuation-goal').value`), '');
+  await closePreview(); simulatedTopics = false; simulatedTopicUnavailable = false;
+  evidence.checks.push('model failure explicitly reports no available topics without phantom choices');
+  evidence.checks.push('all generated topic choices simultaneously visible as radio options', 'session model and reasoning effort shown for topic analysis', 'candidates show source quotes before choosing a goal', 'adopting a topic only fills the goal and clears confirmation', 'stale source or model refuses an old topic');
 
   for (const status of ['pass', 'pending', 'fail', 'unavailable']) {
     await openPreview(second.id);
