@@ -4,7 +4,7 @@
 
 正式仓库：[NelsonLongxiang/dsh-session-inplace-reset](https://github.com/NelsonLongxiang/dsh-session-inplace-reset)。
 
-当前版本 **0.11.0**，已验证宿主为 **DSH 0.2.1-rc.2 / Cordis 4.0.5 / Node 24**。单会话释放使用有边界的宿主适配；不匹配的运行时形状会拒绝操作。
+当前版本 **0.12.0**，已验证宿主为 **DSH 0.2.1-rc.2 / Cordis 4.0.5 / Node 24**。单会话释放使用有边界的宿主适配；不匹配的运行时形状会拒绝操作。
 
 ## 使用
 
@@ -18,6 +18,16 @@
 - 只有同 ID、交接轮与持久化读回核验通过才显示完成。当前标签页随后刷新，清除旧历史和统计。
 - 已完成的重置不提供撤销按钮；执行失败会尝试自动回退，中断事务可显式恢复。归档备份与隔离原件不会自动删除。
 
+## 无重启内存回收
+
+0.12.0释放完整的`agentLoop.lifecycle(id)`，同时注销内部scope和外层owner，避免旧会话被宿主生命周期闭包继续持有。源会话及本次完整备份均走这条路径，其他会话不释放。
+
+重置已提交后结束该源的旧评估/主题预览，定向清理源ID和备份ID的查询prepared缓存及JSONL解码缓存，再用进程内Inspector会话请求一次GC；不打开调试监听端口、不改文件或关闭当前新Agent。未知缓存布局或仍被读取者钉住时保留并提示，不强行清全局缓存；内存回收失败不能回滚已验证的重置。
+
+成功回执与刷新后的弹窗显示同PID堆/RSS前后观测、清理项数和警告。GC会短暂停顿JavaScript线程，观测受其他会话活动影响；不保证小会话或所有环境的RSS立即下降，也不清理其他会话的占用。
+
+真实隔离DSH中，同一PID连续16/32/48MiB合成历史分别从约183.6/240.0/284.7MB堆降至返回时约166.0/166.4/167.8MB；工作集分别约301.6/362.3/409.8→274.3/276.6/279.8MB。原ID、备份、隔离原件保留；完整数据/阶段和诊断GC对照见私有memory实验回执。此数据不等同于重置任意真实业务会话后的固定降幅。
+
 ## 安装发行包
 
 发行入口均为 `dist/*.js`，可在普通 `node_modules` 中加载，不依赖 Node 对依赖包内 TypeScript 的类型擦除。仓库保留 TypeScript 源码及已生成的 JavaScript。
@@ -26,7 +36,7 @@
 git clone https://github.com/NelsonLongxiang/dsh-session-inplace-reset.git
 cd dsh-session-inplace-reset
 npm pack --ignore-scripts
-dsh plugin --profile web add ./local-dsh-session-inplace-reset-0.11.0.tgz --save-exact
+dsh plugin --profile web add ./local-dsh-session-inplace-reset-0.12.0.tgz --save-exact
 ```
 
 上述打包使用已提交产物。修改源码后按下方开发流程重新生成，再打包；不要只复制 `.ts` 文件作为发行入口。
@@ -107,10 +117,16 @@ node test/check-live-reset.mjs --inspect-only
 显式检查：
 
 ```sh
-node test/check-install.ts --launcher /path/to/dsh/lib/bin.js --archive /path/to/local-dsh-session-inplace-reset-0.11.0.tgz
+node test/check-install.ts --launcher /path/to/dsh/lib/bin.js --archive /path/to/local-dsh-session-inplace-reset-0.12.0.tgz
 ```
 
 此检查复用已有 DSH 安装，在独立 `DSH_HOME` 中离线安装发行包、使用随机 loopback 端口启动隔离实例，验证旧预览入口和显式目标新入口的兼容性、原生凭证持久化和真实会话文件的中断恢复。只停止自己创建的隔离进程，不操作当前服务；凭证测试只使用虚构 Key。
+
+```sh
+node test/check-install.ts --launcher /path/to/dsh/lib/bin.js --archive /path/to/local-dsh-session-inplace-reset-0.12.0.tgz --memory --memory-large
+```
+
+`--memory`只在自有隔离home安装临时观测夹具，生成16MiB合成历史；`--memory-large`测试16/32/48MiB。记录自然空闲、诊断GC、查询缓存刷新、解码缓存淘汰与完整owner释放对照，不使用业务会话、不调用模型、不写原始堆快照。所有测量阶段PID保持不变；测试结束只关闭其自有进程。
 
 ```sh
 node test/browser-menu.mjs --model-preview

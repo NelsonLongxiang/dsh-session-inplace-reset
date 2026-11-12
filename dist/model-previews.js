@@ -19,6 +19,7 @@ export function assertPreviewTask(value) {
 export function createModelPreviews(ctx, config, loader, settings, evaluate = evaluateConnection, reportRoot = join(homedir(), '.expert-teams/data/dsh-session-inplace-reset/runs')) {
     const previews = new Map();
     const pendingTasks = new Set();
+    const activeTasks = new Set();
     let active = 0, closing = false;
     const targetBytes = config.handoffTargetKB * 1024;
     const keyFor = (snapshot, connectionKey, goal) => createHash('sha256').update(JSON.stringify([RUBRIC, SAMPLER, targetBytes, goal, connectionKey, sourceDigest(snapshot)])).digest('hex');
@@ -50,9 +51,10 @@ export function createModelPreviews(ctx, config, loader, settings, evaluate = ev
         const task = {
             sessionId, taskId: randomUUID(), startedAt: new Date().toISOString(), running: true,
             progress: { phase: 'preparing', completedBatches: 0, totalBatches: 0, running: 0, concurrency: MAX_PARALLEL_REQUESTS, requestCount: 0, requestLimit: MAX_EVALUATION_CALLS, assessed: 0, sourceTotal: 0 },
-            pending: undefined,
+            pending: undefined, controller: new AbortController(),
         };
         previews.set(key, task);
+        activeTasks.add(task);
         if (previews.size > 8) {
             const oldest = [...previews].find(([, entry]) => !entry.running);
             if (oldest)
@@ -60,7 +62,7 @@ export function createModelPreviews(ctx, config, loader, settings, evaluate = ev
         }
         task.pending = (async () => {
             try {
-                const report = await previewHandoff(snapshot, (state, questions) => closing ? Promise.resolve({ error: '评估请求未完成' }) : evaluate(connection, state, questions), { targetBytes, continuationGoal: goal, onProgress: (value) => { task.progress = { ...value, phase: value.phase === 'complete' ? 'aggregation' : value.phase }; } });
+                const report = await previewHandoff(snapshot, (state, questions) => closing || task.controller.signal.aborted ? Promise.resolve({ error: '评估请求未完成' }) : evaluate(connection, state, questions, task.controller.signal), { targetBytes, continuationGoal: goal, onProgress: (value) => { task.progress = { ...value, phase: value.phase === 'complete' ? 'aggregation' : value.phase }; } });
                 const reportId = randomUUID();
                 const directory = join(reportRoot, `model-${reportId}`);
                 await mkdir(directory, { recursive: true });
@@ -78,6 +80,7 @@ export function createModelPreviews(ctx, config, loader, settings, evaluate = ev
                 task.running = false;
                 active--;
                 pendingTasks.delete(task.pending);
+                activeTasks.delete(task);
             }
         })();
         pendingTasks.add(task.pending);
@@ -87,7 +90,18 @@ export function createModelPreviews(ctx, config, loader, settings, evaluate = ev
     };
     return {
         clear() { previews.clear(); },
-        async dispose() { closing = true; await Promise.allSettled(pendingTasks); },
+        async invalidateSession(sessionId) {
+            assertSessionId(sessionId);
+            const running = [...activeTasks].filter((task) => task.sessionId === sessionId);
+            for (const task of running)
+                task.controller.abort();
+            for (const [key, task] of previews)
+                if (task.sessionId === sessionId)
+                    previews.delete(key);
+            await Promise.allSettled(running.map((task) => task.pending));
+        },
+        async dispose() { closing = true; for (const task of activeTasks)
+            task.controller.abort(); await Promise.allSettled(pendingTasks); },
         async start(sessionId, goal) { return view(await taskFor(sessionId, goal)); },
         status(request) {
             assertPreviewTask(request);

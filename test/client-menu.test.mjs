@@ -84,11 +84,13 @@ test('switching menu rows creates a fresh dialog and carries no previous confirm
 
 test('browser reload restores the verified result without overriding host navigation', () => {
   const id = 'session-33333333-3333-3333-3333-333333333333';
-  const completed = { ok: true, sameId: true, phase: 'DONE', verified: true, sessionId: id, before: { totalTurns: 24 }, after: { totalTurns: 1 } };
+  const completed = { ok: true, sameId: true, phase: 'DONE', verified: true, sessionId: id, before: { totalTurns: 24 }, after: { totalTurns: 1 }, memory: { pid: 123, before: { heapUsed: 200, rss: 400 }, after: { heapUsed: 100, rss: 300 }, queryEntries: 1, persistenceEntries: 2, gcCompleted: true, warnings: [] } };
   const runtime = clientRuntime({ sessionId: id, displayTitle: 'reset result', completed });
   assert.deepEqual(runtime.navigations, []);
   const dialog = runtime.entries.get('shell.overlay').component();
   assert.equal(dialog.props.completed.after.totalTurns, 1);
+  assert.equal(dialog.props.completed.memory.pid, 123);
+  assert.equal(dialog.props.completed.memory.after.heapUsed, 100);
   dialog.props.onClose();
   assert.equal(runtime.stored(), null);
   runtime.dispose();

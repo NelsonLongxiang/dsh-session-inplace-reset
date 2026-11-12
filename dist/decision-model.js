@@ -20,7 +20,7 @@ export async function legacyConnection() {
     }
     return { apiBase: DEFAULT_API_BASE, apiKey: token ?? '' };
 }
-export async function evaluateConnection(connection, state, questions) {
+export async function evaluateConnection(connection, state, questions, signal) {
     if (!connection.apiKey)
         return { error: '未配置决策模型凭证' };
     try {
@@ -32,7 +32,7 @@ export async function evaluateConnection(connection, state, questions) {
                 'ai-gateway-protocol-version': '0.0.1', 'ai-gateway-auth-method': 'api-key',
             },
             body: JSON.stringify({ state, questions }),
-            signal: AbortSignal.timeout(20_000),
+            signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000),
             redirect: 'error',
         });
         if (!response.ok)

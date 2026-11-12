@@ -20,6 +20,7 @@ interface TopicTask extends TopicTaskView { cursor: number; selection: SessionMo
 export function createTopicPreviews(ctx: Host, loader: { resolve(name: string): string }, reportRoot = join(homedir(), '.expert-teams/data/dsh-session-inplace-reset/runs')) {
   const tasks = new Map<string, TopicTask>();
   const pending = new Set<Promise<void>>();
+  const activeTasks = new Set<TopicTask>();
   let active = 0, closing = false, generation = 0;
   const routeKey = (selection: SessionModelSelection) => JSON.stringify(selection);
   const view = (task: TopicTask): TopicTaskView => structuredClone({ taskId: task.taskId, sessionId: task.sessionId, startedAt: task.startedAt, running: task.running, model: task.report?.model ?? task.model, modelSource: task.modelSource, progress: task.progress, ...(task.report ? { report: task.report } : {}), ...(task.error ? { error: task.error } : {}) });
@@ -35,6 +36,13 @@ export function createTopicPreviews(ctx: Host, loader: { resolve(name: string): 
   };
   return {
     clear() { generation++; for (const task of tasks.values()) task.controller.abort(); tasks.clear(); },
+    async invalidateSession(sessionId: string) {
+      assertSessionId(sessionId);
+      const running = [...activeTasks].filter((task) => task.sessionId === sessionId);
+      for (const task of running) task.controller.abort();
+      for (const [key, task] of tasks) if (task.sessionId === sessionId) tasks.delete(key);
+      await Promise.allSettled(running.map((task) => task.pending));
+    },
     async dispose() { closing = true; this.clear(); await Promise.allSettled(pending); },
     async start(sessionId: string): Promise<TopicTaskView> {
       assertSessionId(sessionId);
@@ -58,6 +66,7 @@ export function createTopicPreviews(ctx: Host, loader: { resolve(name: string): 
       tasks.set(key, task);
       if (tasks.size > 8) { const oldest = [...tasks].find(([, value]) => !value.running); if (oldest) tasks.delete(oldest[0]); }
       active++;
+      activeTasks.add(task);
       task.pending = (async () => {
         try {
           const directory = join(reportRoot, `topics-${task.taskId}`);
@@ -68,7 +77,7 @@ export function createTopicPreviews(ctx: Host, loader: { resolve(name: string): 
           await writeFile(join(directory, 'result.json'), JSON.stringify({ ...report, taskId: task.taskId, checkedAt: new Date().toISOString() }, null, 2), { flag: 'wx' });
           task.report = report;
         } catch { task.error = '主题分析未完成，请检查会话模型后重试'; }
-        finally { task.running = false; active--; pending.delete(task.pending); }
+        finally { task.running = false; active--; pending.delete(task.pending); activeTasks.delete(task); }
       })();
       pending.add(task.pending);
       void task.pending.catch(() => undefined);

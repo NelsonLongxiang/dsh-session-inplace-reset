@@ -76,6 +76,21 @@ test('switching models or editing the source invalidates old candidates before a
   }
 });
 
+test('reset invalidation removes the target topic report and drains only its matching stream', async () => {
+  const f = await fixture();
+  const first = await f.topics.start(id); await finished(f, first.taskId);
+  await f.topics.invalidateSession(id);
+  await assert.rejects(f.topics.status({ sessionId: id, taskId: first.taskId }), /失效/);
+  await f.topics.dispose();
+  const held = await fixture(true);
+  const running = await held.topics.start(id);
+  for (let i = 0; i < 1000 && held.calls() === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+  await held.topics.invalidateSession(id);
+  assert.equal(held.calls(), 1);
+  await assert.rejects(held.topics.status({ sessionId: id, taskId: running.taskId }), /失效/);
+  await held.topics.dispose();
+});
+
 test('adapter changes abort pending topic work and unloading drains its owned calls', async () => {
   const f = await fixture(true);
   const first = await f.topics.start(id);

@@ -6,11 +6,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { stripTypeScriptTypes } from 'node:module';
+import { runMemoryExperiment } from './memory-experiment.ts';
 import { ResetJournal, fingerprint } from '../lib/reset-journal.ts';
 
 const value = (flag: string) => { const index = process.argv.indexOf(flag); assert.ok(index >= 0 && process.argv[index + 1], `Missing ${flag}`); return resolve(process.argv[index + 1]); };
 const launcher = value('--launcher');
 const archive = value('--archive');
+const memoryMode = process.argv.includes('--memory');
 const evidence = join(homedir(), '.expert-teams/data/dsh-session-inplace-reset/runs', `install-${randomUUID()}`);
 const home = join(evidence, 'isolated-home');
 const profile = join(home, 'profiles/web');
@@ -19,7 +22,7 @@ const note = (phase: string) => appendFileSync(join(evidence, 'progress.jsonl'),
 note('prepare isolated profile');
 await writeFile(join(profile, 'package.json'), JSON.stringify({ name: 'session-reset-install-check', private: true, type: 'module', dependencies: {}, dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'] } } }, null, 2));
 await writeFile(join(profile, 'cordis.patch.yml'), '[]\n');
-const environment = { ...process.env, DSH_HOME: home };
+const environment = { ...process.env, DSH_HOME: home, ...(memoryMode ? { DSH_MEMORY_PROBE: 'isolated' } : {}) };
 const installer = spawnSync(process.execPath, [launcher, 'plugin', '--profile', 'web', 'add', archive, '--save-exact', '--offline', '--ignore-scripts'], { env: environment, encoding: 'utf8', timeout: 60000, windowsHide: true });
 assert.equal(installer.status, 0, 'Isolated package installation failed');
 note('offline installation complete');
@@ -28,6 +31,17 @@ const resolved = await realpath(installed);
 assert.ok(resolved.toLowerCase().includes('node_modules'), 'The check must use a normal installed package, not an external source link');
 const metadata = JSON.parse(await readFile(join(installed, 'package.json'), 'utf8'));
 assert.equal(metadata.main, 'dist/index.js');
+if (memoryMode) {
+  const probeRoot = join(evidence, 'memory-probe');
+  await mkdir(probeRoot, { recursive: true });
+  const source = await readFile(new URL('./fixtures/memory-probe.ts', import.meta.url), 'utf8');
+  await writeFile(join(probeRoot, 'index.js'), stripTypeScriptTypes(source, { mode: 'strip' }));
+  await writeFile(join(probeRoot, 'package.json'), JSON.stringify({ name: '@local/reset-memory-probe', version: '0.0.0', type: 'module', main: './index.js', exports: { '.': './index.js', './typert': './index.js' }, dsh: { bundle: { patch: './cordis.patch.yml' } } }, null, 2));
+  await writeFile(join(probeRoot, 'cordis.patch.yml'), JSON.stringify([{ insert: [{ id: 'reset-memory-probe', name: '@local/reset-memory-probe', config: { pluginRoot: resolved, home } }] }], null, 2));
+  const result = spawnSync(process.execPath, [launcher, 'plugin', '--profile', 'web', 'add', probeRoot, '--save-exact', '--offline', '--ignore-scripts'], { env: environment, encoding: 'utf8', timeout: 60000, windowsHide: true });
+  assert.equal(result.status, 0, 'Isolated memory fixture installation failed');
+  note('isolated memory fixture installed');
+}
 const expectedKey = 'sandbox-only-not-a-real-key';
 async function credentialHash() {
   try { return createHash('sha256').update(await readFile(join(homedir(), '.dsh/.credentials.yaml'))).digest('hex'); }
@@ -97,6 +111,11 @@ try {
   first = await start();
   const plugins = await first.call('pluginManager/listPlugins', {});
   assert.ok(plugins.some((item: any) => item.moduleName === metadata.name && item.fiberPhase === 'active'));
+  if (memoryMode) {
+    await writeFile(join(evidence, 'memory-plugins.json'), JSON.stringify(plugins.map((item: any) => ({ moduleName: item.moduleName, fiberPhase: item.fiberPhase })), null, 2), { flag: 'wx' });
+    assert.ok(plugins.some((item: any) => item.moduleName === '@local/reset-memory-probe' && item.fiberPhase === 'active'), 'Memory probe must be active');
+    await runMemoryExperiment(first.call, evidence, process.argv.includes('--memory-large') ? [16, 32, 48] : [16], home);
+  }
   const saved = await first.call('sessionReset/sessionResetSaveEvaluationSettings', { request: { apiBase: 'http://127.0.0.1:9/evaluate', apiKey: expectedKey } });
   assert.equal(saved.hasSavedKey, true);
   assert.ok(!JSON.stringify(saved).includes(expectedKey));

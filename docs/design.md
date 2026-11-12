@@ -4,7 +4,7 @@
 
 会话级并发闸 → 活度检查 → 有序释放目标运行时并等待写句柄关闭 → fork → 独立读回核验完整事件前缀 → 归档备份 → 持久化交接包与账本 → 隔离旧实体 → 同ID重建并写一轮交接 → 独立读回校验 → DONE。
 
-- `lib/session-lifecycle.js` 针对已验证的 AgentLoop/Cordis 布局，定位唯一的 `agentLoop.scope(id)` 有序 disposer。依赖宿主 effect 元数据，未知形状、身份变化或运行中状态会拒绝修改存储。
+- `lib/session-lifecycle.js` 针对已验证的 AgentLoop/Cordis 布局，以唯一active `agentLoop.scope(id)` 和当前Agent/Session身份为守卫，释放同ID完整`agentLoop.lifecycle(id)` owner。只释放内部scope虽会detach运行时，却留下外层effect闭包继续引用旧Agent/Session。已结束的同ID遗留owner也一并注销；缺失完整owner或布局未知时拒绝修改存储。
 - 并发闸覆盖目标会话的输入、创建、准备与恢复入口，其他会话可继续工作。
 - `lib/backup.js` 将 fork 的持久化事件前缀与原事件逐项比较。备份大小、行数相近不能代替该核验。
 - `lib/agent-preset.ts` 从正式投影/持久化选择事件读取原预设。执行请求可选 `agentPreset`，省略沿用原预设；指定时用宿主 `agentPresets.resolve()` 在释放前校验，并在隔离前复检。创建同ID会话时显式传入已解析ID，独立读回必须匹配。近期采样与模型候选共享此路径，失败始终恢复原预设。
@@ -13,6 +13,16 @@
 - 恢复根据实际位置与摘要识别“重命名已完成、事件未写入”的中断窗口。原位出现的新实体先移至 `preserved/<generationId>/`，再恢复原件。回迁再次失败仍保留已完成步骤，下一次恢复跳过已校验回迁的实体，冲突时拒绝覆盖。
 - `lib/ledger.ts` 保留旧账本和损坏尾部，每次插件装载使用新的追加文件，逐条fsync。历史记录缺损会显示提示；事务清单与事件承担恢复判断。
 - 只有新日志中实际存在完整交接文本且轮次符合约定，才持久化 `committed` 并返回 verified DONE；随后历史账本追加失败只返回提示，不能反过来撤销已提交事务。
+
+## 内存回收
+
+0.11对照暴露三类保留链：外层lifecycle effect、query prepared观察缓存、persistence coldLogMemo（验证过的备份原文也会进入）。刷新原会话prepared缓存不足以降低堆，备份解码缓存和旧owner仍会持有文本。
+
+0.12仅对本次已验证源ID与forkID做内存后处理。主重置事务返回后，中止并等待匹配的旧预览任务，定向移除两级纯读取缓存，再等一个event-loop turn以释放事务局部引用，使用内部Inspector Session执行HeapProfiler.collectGarbage。不开TCP调试端口、不改V8启动flags，不影响源文件/备份/写句柄；保留有refs的观察缓存，未知布局只记警告。旧报告不再能作为当前候选，其他源不清理。回收观测追加OBSERVED账本和RPC回执，不改变不可变committed事件；后处理失败绝不触发回迁。
+
+UI保存内存观测到completed回执，刷新后仍展示堆/RSS变化。它是整个进程的观测，其他会话活动可影响数值，不能当作固定降幅承诺。
+
+测试夹具只允许自有install-*/isolated-home且显式memory标志，所有合成会话标记reset-test；以同PID比较自然回收与诊断GC、缓存替换和外层owner注销。不写原始堆快照，避免将环境中的凭证序列化。
 
 ## 评估连接
 

@@ -1,5 +1,6 @@
 import type * as ReactTypes from 'react';
 import type { ModelReport } from '../lib/model-handoff.ts';
+import type { ResetMemoryReport } from '../lib/memory-reclaim.ts';
 import type { PreviewTaskView } from '../lib/model-previews.ts';
 import type { TopicTaskView } from '../lib/topic-previews.ts';
 import type { SessionModelSelection } from '../lib/session-model.ts';
@@ -7,7 +8,7 @@ import type { EvaluationSettingsView } from '../lib/evaluation-settings.ts';
 
 import type { recoveryStatus, listRecoveryStatus } from '../lib/reset-journal.ts';
 
-type Complete = { ok: true; phase: 'DONE'; verified: true; sameId: true; sessionId: string; before: { totalTurns: number; totalEvents: number }; after: { totalTurns: number; totalEvents: number; agentPreset?: string | null }; forkId?: string; operationId?: string; auditWarning?: string; handoffMode?: 'model' | 'recent'; modelReportId?: string; modelSourceHash?: string };
+type Complete = { ok: true; phase: 'DONE'; verified: true; sameId: true; sessionId: string; before: { totalTurns: number; totalEvents: number }; after: { totalTurns: number; totalEvents: number; agentPreset?: string | null }; forkId?: string; operationId?: string; auditWarning?: string; handoffMode?: 'model' | 'recent'; modelReportId?: string; modelSourceHash?: string; memory?: ResetMemoryReport };
 type Recovered = { ok: true; phase: 'RECOVERED'; verified: true; sameId: true; sessionId: string; operationId: string; after?: { totalTurns: number; totalEvents: number }; auditWarning?: string };
 type RecoveryView = ReturnType<typeof recoveryStatus> & { warnings: string[] };
 type RecoveryIndexView = ReturnType<typeof listRecoveryStatus> & { warnings: string[] };
@@ -249,8 +250,8 @@ window.__ModuleLoader__.load({
           setResult(value);
           setDry(null);
           try {
-            const { ok, phase, verified, sameId, sessionId: id, before, after, forkId, operationId, auditWarning, handoffMode, modelReportId, modelSourceHash } = value;
-            window.sessionStorage.setItem(completedKey, JSON.stringify({ sessionId: id, displayTitle, completed: { ok, phase, verified, sameId, sessionId: id, before, after, forkId, operationId, auditWarning, handoffMode, modelReportId, modelSourceHash } }));
+            const { ok, phase, verified, sameId, sessionId: id, before, after, forkId, operationId, auditWarning, handoffMode, modelReportId, modelSourceHash, memory } = value;
+            window.sessionStorage.setItem(completedKey, JSON.stringify({ sessionId: id, displayTitle, completed: { ok, phase, verified, sameId, sessionId: id, before, after, forkId, operationId, auditWarning, handoffMode, modelReportId, modelSourceHash, memory } }));
             window.location.reload();
           } catch { setError('后端重置已校验完成，请刷新当前标签页以清除旧统计。'); }
         } catch (reason) {
@@ -409,6 +410,11 @@ window.__ModuleLoader__.load({
           result && h('div', { role: result.phase === 'NOT_RESET' ? 'alert' : 'status', 'data-inplace-reset-result': result.phase },
             h('b', null, result.phase === 'DONE' ? '重置已完成并校验' : result.phase === 'RECOVERED' ? '原日志已恢复并校验' : '未重置'),
             result.phase === 'DONE' && h('p', { 'data-inplace-reset-after': true }, `原日志轮次：${result.before.totalTurns} → ${result.after.totalTurns}；事件数：${result.before.totalEvents} → ${result.after.totalEvents}`),
+            result.phase === 'DONE' && result.memory && Array.isArray(result.memory.warnings) && ['heapUsed', 'rss'].every((key) => Number.isFinite(result.memory?.before?.[key as keyof NodeJS.MemoryUsage]) && Number.isFinite(result.memory?.after?.[key as keyof NodeJS.MemoryUsage])) && h('div', { 'data-inplace-reset-memory': true },
+              h('p', null, `同进程内存观测：堆 ${(result.memory.before.heapUsed / 1048576).toFixed(1)} → ${(result.memory.after.heapUsed / 1048576).toFixed(1)} MB；RSS ${(result.memory.before.rss / 1048576).toFixed(1)} → ${(result.memory.after.rss / 1048576).toFixed(1)} MB`),
+              h('small', null, `已清理 ${result.memory.queryEntries + result.memory.persistenceEntries} 项读取缓存；${result.memory.gcCompleted ? '已请求运行时回收' : '等待自然回收'}。其他会话活动会影响进程总量。`),
+              result.memory.warnings.map((warning, index) => h('p', { key: index, role: 'status' }, warning)),
+            ),
             result.phase === 'NOT_RESET' && h('p', null, result.note),
             result.phase !== 'NOT_RESET' && result.auditWarning && h('p', { role: 'alert' }, result.auditWarning),
             result.phase === 'DONE' && result.handoffMode === 'model' && h('p', { 'data-inplace-reset-applied-model': result.modelReportId }, `交接来源：模型候选 ${result.modelReportId}`),

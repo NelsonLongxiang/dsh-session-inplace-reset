@@ -27,7 +27,7 @@ export async function legacyConnection(): Promise<EvaluationConnection> {
   return { apiBase: DEFAULT_API_BASE, apiKey: token ?? '' };
 }
 
-export async function evaluateConnection(connection: EvaluationConnection, state: unknown, questions: Questions): Promise<Evaluation> {
+export async function evaluateConnection(connection: EvaluationConnection, state: unknown, questions: Questions, signal?: AbortSignal): Promise<Evaluation> {
   if (!connection.apiKey) return { error: '未配置决策模型凭证' };
   try {
     const response = await fetch(connection.apiBase, {
@@ -38,7 +38,7 @@ export async function evaluateConnection(connection: EvaluationConnection, state
         'ai-gateway-protocol-version': '0.0.1', 'ai-gateway-auth-method': 'api-key',
       },
       body: JSON.stringify({ state, questions }),
-      signal: AbortSignal.timeout(20_000),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000),
       redirect: 'error',
     });
     if (!response.ok) return { error: `决策模型不可用（HTTP ${response.status}）` };

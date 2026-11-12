@@ -8,7 +8,7 @@ import type { Evaluation, Questions } from '../lib/decision-model.ts';
 
 const id = 'session-11111111-1111-1111-1111-111111111111';
 const answers = (questions: Questions): Evaluation => ({ answers: Object.fromEntries(Object.entries(questions).map(([key, question]) => [key, question.type === 'score' ? { score: 3, probabilities: { 0: 0, 1: 0, 2: 0, 3: 1 } } : { probability: key.startsWith('context_') || key.startsWith('resolve_') || key.endsWith('_superseded') ? 0.05 : 0.95 }])) });
-async function fixture(evaluate?: (state: unknown, questions: Questions) => Promise<Evaluation>) {
+async function fixture(evaluate?: (state: unknown, questions: Questions, signal?: AbortSignal) => Promise<Evaluation>) {
   const root = await mkdtemp(join(tmpdir(), 'model-previews-'));
   const module = join(root, 'host-session-fixture.mjs');
   await writeFile(module, 'export class Session { static fromRestore(_id, events) { return { surface: { nodes: events.map((_, i) => i) }, deriveEventMessage: event => event.data }; } }');
@@ -17,7 +17,7 @@ async function fixture(evaluate?: (state: unknown, questions: Questions) => Prom
   const observation = (sessionId = id) => ({ header: { id: sessionId }, cursor, inheritedEventCount: 0, events: [{ seq: 0, data: { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] } }], [Symbol.dispose]: () => { disposed++; } });
   const ctx = { sessionQuery: { observeSession: async (sessionId: string) => observation(sessionId) }, get: (_name: 'sessions') => ({ messageProjections: {} }) };
   const settings = { connection: async () => ({ apiBase: 'https://eval.example.test/v4/ai/evaluation-model', apiKey: 'not-a-real-secret', cacheKey: connectionKey }) };
-  const models = createModelPreviews(ctx, { handoffTargetKB: 64, handoffHardCapKB: 512 }, { resolve: () => module }, settings, async (_connection, state, questions) => { assert.ok(disposed > 0, 'Observation lease must be released before network work'); requests++; return evaluate ? evaluate(state, questions) : answers(questions); }, root);
+  const models = createModelPreviews(ctx, { handoffTargetKB: 64, handoffHardCapKB: 512 }, { resolve: () => module }, settings, async (_connection, state, questions, signal) => { assert.ok(disposed > 0, 'Observation lease must be released before network work'); requests++; return evaluate ? evaluate(state, questions, signal) : answers(questions); }, root);
   return { root, models, observation, requests: () => requests, change: (value: string, seq = cursor + 1) => { text = value; cursor = seq; }, connect: (value: string) => { connectionKey = value; } };
 }
 
@@ -152,6 +152,25 @@ test('unloading drains requests even after clearing cache and schedules no new p
   await pending;
   assert.equal(disposed, true);
   assert.equal(f.requests(), 1);
+});
+
+test('reset invalidation clears only its source and aborts matching work even after cache clearing', async () => {
+  const f = await fixture();
+  const report = await f.models.preview(id);
+  const other = 'session-22222222-2222-2222-2222-222222222222';
+  const retained = await f.models.preview(other);
+  await f.models.invalidateSession(id);
+  await assert.rejects(f.models.handoff(id, f.observation(), { modelReportId: report.reportId, sourceHash: report.sourceHash }), /失效/);
+  assert.equal((await f.models.preview(other)).reportId, retained.reportId);
+  assert.equal(f.requests(), 6);
+  const pending = await fixture(async (_state, _questions, signal) => {
+    await new Promise<void>((resolve) => { if (signal?.aborted) resolve(); else signal?.addEventListener('abort', () => resolve(), { once: true }); });
+    return { error: 'offline' };
+  });
+  await pending.models.start(id);
+  pending.models.clear();
+  await pending.models.invalidateSession(id);
+  assert.equal(pending.requests(), 1);
 });
 
 test('the bounded in-memory cache cannot revive an evicted report from its saved JSON', async () => {

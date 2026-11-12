@@ -408,6 +408,8 @@ try {
     await until(`['DONE', 'NOT_RESET'].includes(document.querySelector('[data-inplace-reset-result]')?.getAttribute('data-inplace-reset-result'))`, 'reset operation settled', 70_000);
     const settled = await evaluate(`({ phase: document.querySelector('[data-inplace-reset-result]')?.getAttribute('data-inplace-reset-result'), text: document.querySelector('[data-inplace-reset-result]')?.innerText })`);
     assert.equal(settled.phase, 'DONE', settled.text);
+    const memoryObservation = await evaluate(`document.querySelector('[data-inplace-reset-memory]')?.innerText`);
+    assert.match(memoryObservation ?? '', /同进程内存观测：堆/);
     if (requestedPreset) {
       assert.equal(await evaluate(`document.querySelector('[data-inplace-reset-after-preset]')?.dataset.inplaceResetAfterPreset`), requestedPreset);
       assert.equal(requests.find((request) => /\/sessionResetExecute(?:Model)?$/.test(request.method))?.agentPreset, requestedPreset);
@@ -426,7 +428,7 @@ try {
     await mkdir(out, { recursive: true });
     const shot = await send('Page.captureScreenshot', { format: 'png' });
     await writeFile(join(out, 'verified-live-reset.png'), Buffer.from(shot.data, 'base64'));
-    await writeFile(join(out, 'result.json'), JSON.stringify({ sessionId, result, chosenReportId, requestedPreset, requests, checks: ['verified DONE restored after browser reload', 'old history window replaced', 'composer usable', 'old turn/step and token counters cleared', 'no DSH restart requested'] }, null, 2));
+    await writeFile(join(out, 'result.json'), JSON.stringify({ sessionId, result, memoryObservation, chosenReportId, requestedPreset, requests, checks: ['verified DONE restored after browser reload', 'memory observation retained after reload', 'old history window replaced', 'composer usable', 'old turn/step and token counters cleared', 'no DSH restart requested'] }, null, 2));
     console.log(`PASS actual menu reset ${sessionId}: ${result}; active history refreshed; evidence: ${out}`);
   } else {
   const rows = await evaluate(`JSON.stringify([...document.querySelectorAll('[data-row-key^="session:"]')].filter(row => row.querySelector('[class*="rowActions"] button')).slice(0, 2).map(row => ({ id: row.dataset.rowKey.slice(8), title: row.querySelector('[class*="title"]')?.textContent ?? '' })))`);

@@ -11,6 +11,7 @@ import { analyzeTopics, TOPIC_ANALYSIS_VERSION } from "./topic-analysis.js";
 export function createTopicPreviews(ctx, loader, reportRoot = join(homedir(), '.expert-teams/data/dsh-session-inplace-reset/runs')) {
     const tasks = new Map();
     const pending = new Set();
+    const activeTasks = new Set();
     let active = 0, closing = false, generation = 0;
     const routeKey = (selection) => JSON.stringify(selection);
     const view = (task) => structuredClone({ taskId: task.taskId, sessionId: task.sessionId, startedAt: task.startedAt, running: task.running, model: task.report?.model ?? task.model, modelSource: task.modelSource, progress: task.progress, ...(task.report ? { report: task.report } : {}), ...(task.error ? { error: task.error } : {}) });
@@ -30,6 +31,16 @@ export function createTopicPreviews(ctx, loader, reportRoot = join(homedir(), '.
     return {
         clear() { generation++; for (const task of tasks.values())
             task.controller.abort(); tasks.clear(); },
+        async invalidateSession(sessionId) {
+            assertSessionId(sessionId);
+            const running = [...activeTasks].filter((task) => task.sessionId === sessionId);
+            for (const task of running)
+                task.controller.abort();
+            for (const [key, task] of tasks)
+                if (task.sessionId === sessionId)
+                    tasks.delete(key);
+            await Promise.allSettled(running.map((task) => task.pending));
+        },
         async dispose() { closing = true; this.clear(); await Promise.allSettled(pending); },
         async start(sessionId) {
             assertSessionId(sessionId);
@@ -65,6 +76,7 @@ export function createTopicPreviews(ctx, loader, reportRoot = join(homedir(), '.
                     tasks.delete(oldest[0]);
             }
             active++;
+            activeTasks.add(task);
             task.pending = (async () => {
                 try {
                     const directory = join(reportRoot, `topics-${task.taskId}`);
@@ -85,6 +97,7 @@ export function createTopicPreviews(ctx, loader, reportRoot = join(homedir(), '.
                     task.running = false;
                     active--;
                     pending.delete(task.pending);
+                    activeTasks.delete(task);
                 }
             })();
             pending.add(task.pending);

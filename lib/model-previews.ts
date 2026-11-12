@@ -18,7 +18,7 @@ interface Config { handoffTargetKB: number; handoffHardCapKB: number }
 interface Settings { connection(): Promise<EvaluationConnection & { cacheKey: string }> }
 export interface PreviewTaskRequest { sessionId: string; taskId: string }
 export interface PreviewTaskView extends PreviewTaskRequest { startedAt: string; running: boolean; progress: PreviewProgress; report?: ModelReport; error?: string }
-interface PreviewTask extends PreviewTaskView { pending: Promise<CachedPreview> }
+interface PreviewTask extends PreviewTaskView { pending: Promise<CachedPreview>; controller: AbortController }
 
 export function assertPreviewTask(value: unknown): asserts value is PreviewTaskRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('preview task request required');
@@ -30,6 +30,7 @@ export function assertPreviewTask(value: unknown): asserts value is PreviewTaskR
 export function createModelPreviews(ctx: Host, config: Config, loader: { resolve(name: string): string }, settings: Settings, evaluate = evaluateConnection, reportRoot = join(homedir(), '.expert-teams/data/dsh-session-inplace-reset/runs')) {
   const previews = new Map<string, PreviewTask>();
   const pendingTasks = new Set<Promise<CachedPreview>>();
+  const activeTasks = new Set<PreviewTask>();
   let active = 0, closing = false;
   const targetBytes = config.handoffTargetKB * 1024;
   const keyFor = (snapshot: SourceSnapshot, connectionKey: string, goal: string) => createHash('sha256').update(JSON.stringify([RUBRIC, SAMPLER, targetBytes, goal, connectionKey, sourceDigest(snapshot)])).digest('hex');
@@ -53,16 +54,17 @@ export function createModelPreviews(ctx: Host, config: Config, loader: { resolve
     const task: PreviewTask = {
       sessionId, taskId: randomUUID(), startedAt: new Date().toISOString(), running: true,
       progress: { phase: 'preparing', completedBatches: 0, totalBatches: 0, running: 0, concurrency: MAX_PARALLEL_REQUESTS, requestCount: 0, requestLimit: MAX_EVALUATION_CALLS, assessed: 0, sourceTotal: 0 },
-      pending: undefined!,
+      pending: undefined!, controller: new AbortController(),
     };
     previews.set(key, task);
+    activeTasks.add(task);
     if (previews.size > 8) {
       const oldest = [...previews].find(([, entry]) => !entry.running);
       if (oldest) previews.delete(oldest[0]);
     }
     task.pending = (async () => {
       try {
-        const report = await previewHandoff(snapshot, (state, questions) => closing ? Promise.resolve({ error: '评估请求未完成' }) : evaluate(connection, state, questions), { targetBytes, continuationGoal: goal, onProgress: (value) => { task.progress = { ...value, phase: value.phase === 'complete' ? 'aggregation' : value.phase }; } });
+        const report = await previewHandoff(snapshot, (state, questions) => closing || task.controller.signal.aborted ? Promise.resolve({ error: '评估请求未完成' }) : evaluate(connection, state, questions, task.controller.signal), { targetBytes, continuationGoal: goal, onProgress: (value) => { task.progress = { ...value, phase: value.phase === 'complete' ? 'aggregation' : value.phase }; } });
         const reportId = randomUUID();
         const directory = join(reportRoot, `model-${reportId}`);
         await mkdir(directory, { recursive: true });
@@ -72,7 +74,7 @@ export function createModelPreviews(ctx: Host, config: Config, loader: { resolve
         task.progress = { ...task.progress, phase: 'complete' };
         return { report: value, connectionKey: connection.cacheKey };
       } catch (error) { task.error = '模型预览未完成，请重新预览'; throw error; }
-      finally { task.running = false; active--; pendingTasks.delete(task.pending); }
+      finally { task.running = false; active--; pendingTasks.delete(task.pending); activeTasks.delete(task); }
     })();
     pendingTasks.add(task.pending);
     // A progress client observes errors through status; legacy callers can still await the same promise.
@@ -81,7 +83,14 @@ export function createModelPreviews(ctx: Host, config: Config, loader: { resolve
   };
   return {
     clear() { previews.clear(); },
-    async dispose() { closing = true; await Promise.allSettled(pendingTasks); },
+    async invalidateSession(sessionId: string) {
+      assertSessionId(sessionId);
+      const running = [...activeTasks].filter((task) => task.sessionId === sessionId);
+      for (const task of running) task.controller.abort();
+      for (const [key, task] of previews) if (task.sessionId === sessionId) previews.delete(key);
+      await Promise.allSettled(running.map((task) => task.pending));
+    },
+    async dispose() { closing = true; for (const task of activeTasks) task.controller.abort(); await Promise.allSettled(pendingTasks); },
     async start(sessionId: string, goal?: string): Promise<PreviewTaskView> { return view(await taskFor(sessionId, goal)); },
     status(request: PreviewTaskRequest): PreviewTaskView {
       assertPreviewTask(request);

@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-session-inplace-reset",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Same-ID session reset with verified backup, resumable recovery, and explicitly chosen model handoffs.",
   "dsh": {
     "bundle": {
@@ -35,7 +35,7 @@
     "build:client": "node tools/build-client.ts",
     "check:client": "node tools/build-client.ts --check",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/client-menu.test.mjs test/decision-model.test.ts test/evaluation-settings.test.ts test/reset-journal.test.ts test/ledger.test.ts test/package.test.ts test/model-handoff.test.ts test/model-previews.test.ts test/handoff-eval.test.ts test/handoff-batches.test.ts test/continuation-context.test.ts test/session-model.test.ts test/topic-analysis.test.ts test/topic-previews.test.ts test/parallel-http.test.ts test/register-rpc.test.ts test/agent-preset.test.ts test/reset.test.mjs test/session-lifecycle.test.mjs"
+    "test": "node --test test/client-menu.test.mjs test/decision-model.test.ts test/evaluation-settings.test.ts test/reset-journal.test.ts test/ledger.test.ts test/memory-reclaim.test.ts test/package.test.ts test/model-handoff.test.ts test/model-previews.test.ts test/handoff-eval.test.ts test/handoff-batches.test.ts test/continuation-context.test.ts test/session-model.test.ts test/topic-analysis.test.ts test/topic-previews.test.ts test/parallel-http.test.ts test/register-rpc.test.ts test/agent-preset.test.ts test/reset.test.mjs test/session-lifecycle.test.mjs"
   },
   "repository": {
     "type": "git",

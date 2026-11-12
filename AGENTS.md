@@ -16,6 +16,8 @@ https://github.com/NelsonLongxiang/dsh-session-inplace-reset
 - 浏览器集成测试仅创建、操作和关闭自己的 CDP target；端点由本机 `.env.local` 配置，不另起浏览器或清理共享登录态。
 - 普通浏览器检查拦截重置和凭证写入。创建测试副本须显式使用 `--prepare-model-preview` 或 `--run` 并提供 `DSH_TEST_SOURCE_SESSION`；真实重置仅允许 `--run` 新建且标记的测试副本，来源不重置。
 - 不重启整个 DSH 来执行单会话重置；生命周期形状不符时拒绝操作。
+- 单会话释放须注销完整agentLoop.lifecycle(id)外层owner，不能只调内部scope，否则闭包继续持有旧会话。完整owner与active scope/Agent/Session身份均校验；旧同ID已detach owner可清理，未发布active scope拒绝。
+- 内存回收仅清本次源/已验证fork的读取缓存与匹配预览任务，未知缓存布局/活跃读取者保留并警告，不动文件和写句柄；进程内GC不打开调试端口。回收失败不能回滚已committed重置，堆/RSS结论必须来自同PID对照。
 - RPC 由插件自己的 `sessionReset` Remote service 提供，不能依赖对宿主 `workspaceRegistry` 的内存补丁或残留绑定。热升级保留旧贡献拥有者，新接口仅由本包 `/preview` 贡献注册。
 - `lib/reset-journal.ts` 的清单和事件文件不可覆盖；中断恢复按实际文件位置与摘要校验，先保留新代际再回迁原件。原会话行可能已消失，恢复入口必须支持全局查找。
 - 保留原件、备份、隔离与失败代际。不能用事件数相近或压缩体积相近替代逐事件备份验证。

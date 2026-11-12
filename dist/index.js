@@ -13,6 +13,7 @@ import { mountResetRemote } from "./remote-service.js";
 import { createSessionLifecycle } from './session-lifecycle.js';
 import { executeReset, executeRecovery, sessionMetrics } from './reset.js';
 import { Ledger } from "./ledger.js";
+import { reclaimResetMemory } from "./memory-reclaim.js";
 import { recoveryStatus, listRecoveryStatus } from "./reset-journal.js";
 export { Ledger } from "./ledger.js";
 import { assertSessionId } from './live-release.js';
@@ -79,6 +80,25 @@ export async function apply(ctx, config) {
     ctx.on('llm/adapters-updated', () => topicPreviews.clear());
     ctx.effect(() => () => modelPreviews.dispose(), 'session-reset: preview workers');
     ctx.effect(() => () => lifecycle.dispose(), 'session-reset: lifecycle guards');
+    const reset = async (request, options) => {
+        const beforeMemory = process.memoryUsage();
+        const result = await executeReset(ctx, ledger, lifecycle, home, request, options);
+        try {
+            const ids = [result.sessionId, result.forkId].filter((id) => typeof id === 'string');
+            await Promise.all(ids.flatMap((id) => [modelPreviews.invalidateSession(id), topicPreviews.invalidateSession(id)]));
+            const memory = await reclaimResetMemory(ctx, ids, symbols, beforeMemory);
+            try {
+                ledger.append({ operationId: result.operationId, sessionId: result.sessionId, step: 'MEMORY_RECLAIM', state: 'OBSERVED', detail: memory });
+            }
+            catch {
+                memory.warnings.push('内存观测未写入可选历史账本');
+            }
+            return { ...result, memory };
+        }
+        catch {
+            return { ...result, auditWarning: [result.auditWarning, '重置已校验完成，内存回收未完成'].filter(Boolean).join('；') };
+        }
+    };
     const methods = {
         async sessionResetEvaluationSettings() { return evaluationSettings.describe(); },
         async sessionResetSaveEvaluationSettings(request) { return evaluationSettings.save(request); },
@@ -118,11 +138,11 @@ export async function apply(ctx, config) {
         async sessionResetTopicPreviewStart(sessionId) { return topicPreviews.start(sessionId); },
         async sessionResetTopicPreviewStatus(request) { return topicPreviews.status(request); },
         async sessionResetExecute(request) {
-            return executeReset(ctx, ledger, lifecycle, home, request, { ...config, buildHandoff });
+            return reset(request, { ...config, buildHandoff });
         },
         async sessionResetExecuteModel(request) {
             assertModelChoice(request);
-            return executeReset(ctx, ledger, lifecycle, home, request, { ...config, modelReportId: request.modelReportId, modelSourceHash: request.sourceHash, buildHandoff: (_events, _options, source) => modelPreviews.handoff(request.sessionId, source, request) });
+            return reset(request, { ...config, modelReportId: request.modelReportId, modelSourceHash: request.sourceHash, buildHandoff: (_events, _options, source) => modelPreviews.handoff(request.sessionId, source, request) });
         },
         async sessionResetResume(request) {
             return executeRecovery(ctx, ledger, lifecycle, home, request);
