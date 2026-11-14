@@ -81,6 +81,8 @@ export async function executeReset(ctx, ledger, lifecycle, home, request, cfg) {
             if (title)
                 await controller.rename({ sessionId, title });
             await agent.runMaintenance(async () => {
+                // fix-P (2026-11-14): surface 为空时先落一条头 system/message 建立 protectedHead；后续提示更新走合法 replace，杜绝 midSurface append 损坏
+                agent.session.append('system/message', { turn: 1, step: 0, message: { role: 'system', content: [] } }, { surfaceOp: 'append' });
                 agent.session.append('turn/start', { turn: 1 });
                 agent.session.append('user/message', { id: randomUUID(), role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] }, { surfaceOp: 'append' });
                 agent.session.append('turn/end', { turn: 1, reason: { kind: 'completed' } });
