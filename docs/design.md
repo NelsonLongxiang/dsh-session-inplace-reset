@@ -8,7 +8,7 @@
 - 并发闸覆盖目标会话的输入、创建、准备与恢复入口，其他会话可继续工作。
 - `lib/backup.js` 将 fork 的持久化事件前缀与原事件逐项比较。备份大小、行数相近不能代替该核验。
 - `lib/agent-preset.ts` 从正式投影/持久化选择事件读取原预设。执行请求可选 `agentPreset`，省略沿用原预设；指定时用宿主 `agentPresets.resolve()` 在释放前校验，并在隔离前复检。创建同ID会话时显式传入已解析ID，独立读回必须匹配。近期采样与模型候选共享此路径，失败始终恢复原预设。
-- `lib/reset-transaction.ts` 组织执行与显式恢复；`lib/reset.js` 只保留既有导入入口。
+- `lib/reset-transaction.ts` 组织执行与显式恢复；`lib/reset.js` 只保留既有导入入口。新日志先写 `turn/start`，再写 `step/start → system/message → step/end` 建立可替换的 protectedHead，最后写交接 `user/message → turn/end`；头部步骤也必须位于这一轮内。
 - `lib/reset-journal.ts` 在 `session-reset/transactions/<operationId>/` 原子发布不可变清单，记录原路径、SHA-256、字节数和文件数。每步状态写入新的事件文件并fsync；隔离原件位于 `quarantine/<operationId>/original/`。
 - 恢复根据实际位置与摘要识别“重命名已完成、事件未写入”的中断窗口。原位出现的新实体先移至 `preserved/<generationId>/`，再恢复原件。回迁再次失败仍保留已完成步骤，下一次恢复跳过已校验回迁的实体，冲突时拒绝覆盖。
 - `lib/ledger.ts` 保留旧账本和损坏尾部，每次插件装载使用新的追加文件，逐条fsync。历史记录缺损会显示提示；事务清单与事件承担恢复判断。

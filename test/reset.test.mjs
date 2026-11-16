@@ -93,6 +93,26 @@ test('reset completes only after a new one-turn handoff is durably read back', a
   assert.equal(f.rows.at(-1).state, 'DONE');
 });
 
+test('the protected system head and handoff share one open turn with a closed step', async () => {
+  const f = fixture();
+  await f.run();
+  const events = JSON.parse(readFileSync(f.file(f.id), 'utf8')).events.filter((event) => event.type !== 'session/title');
+  assert.deepEqual(events.map((event) => [event.type, event.data.turn, event.data.step]), [
+    ['turn/start', 1, undefined],
+    ['step/start', 1, 1],
+    ['system/message', 1, 1],
+    ['step/end', 1, 1],
+    ['user/message', undefined, undefined],
+    ['turn/end', 1, undefined],
+  ]);
+  const head = events[2];
+  assert.equal(head.surfaceOp, 'append');
+  assert.equal(head.data.message.role, 'system');
+  assert.equal(head.data.message.source.kind, 'system-prompt');
+  assert.ok(head.data.message.id);
+  assert.deepEqual(head.data.message.content, []);
+});
+
 test('rebirth defaults to the original preset and can explicitly choose another on the same ID', async () => {
   const original = fixture();
   const preserved = await original.run();
