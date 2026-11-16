@@ -4,7 +4,7 @@
 
 正式仓库：[NelsonLongxiang/dsh-session-inplace-reset](https://github.com/NelsonLongxiang/dsh-session-inplace-reset)。
 
-当前版本 **0.12.0**，已验证宿主为 **DSH 0.2.1-rc.2 / Cordis 4.0.5 / Node 24**。单会话释放使用有边界的宿主适配；不匹配的运行时形状会拒绝操作。
+当前版本 **0.12.2**（修正重建时 `turn/start` 必须先于 `step/start` 的顺序），已验证宿主为 **DSH 0.2.1-rc.2 / Cordis 4.0.5 / Node 24**。单会话释放使用有边界的宿主适配；不匹配的运行时形状会拒绝操作。
 
 ## 使用
 
@@ -36,7 +36,7 @@
 git clone https://github.com/NelsonLongxiang/dsh-session-inplace-reset.git
 cd dsh-session-inplace-reset
 npm pack --ignore-scripts
-dsh plugin --profile web add ./local-dsh-session-inplace-reset-0.12.0.tgz --save-exact
+dsh plugin --profile web add ./local-dsh-session-inplace-reset-0.12.2.tgz --save-exact
 ```
 
 上述打包使用已提交产物。修改源码后按下方开发流程重新生成，再打包；不要只复制 `.ts` 文件作为发行入口。
@@ -117,13 +117,13 @@ node test/check-live-reset.mjs --inspect-only
 显式检查：
 
 ```sh
-node test/check-install.ts --launcher /path/to/dsh/lib/bin.js --archive /path/to/local-dsh-session-inplace-reset-0.12.0.tgz
+node test/check-install.ts --launcher /path/to/dsh/lib/bin.js --archive /path/to/local-dsh-session-inplace-reset-0.12.2.tgz
 ```
 
 此检查复用已有 DSH 安装，在独立 `DSH_HOME` 中离线安装发行包、使用随机 loopback 端口启动隔离实例，验证旧预览入口和显式目标新入口的兼容性、原生凭证持久化和真实会话文件的中断恢复。只停止自己创建的隔离进程，不操作当前服务；凭证测试只使用虚构 Key。
 
 ```sh
-node test/check-install.ts --launcher /path/to/dsh/lib/bin.js --archive /path/to/local-dsh-session-inplace-reset-0.12.0.tgz --memory --memory-large
+node test/check-install.ts --launcher /path/to/dsh/lib/bin.js --archive /path/to/local-dsh-session-inplace-reset-0.12.2.tgz --memory --memory-large
 ```
 
 `--memory`只在自有隔离home安装临时观测夹具，生成16MiB合成历史；`--memory-large`测试16/32/48MiB。记录自然空闲、诊断GC、查询缓存刷新、解码缓存淘汰与完整owner释放对照，不使用业务会话、不调用模型、不写原始堆快照。所有测量阶段PID保持不变；测试结束只关闭其自有进程。
