@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-session-inplace-reset",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "Same-ID session reset with verified backup, resumable recovery, and explicitly chosen model handoffs.",
   "dsh": {
     "bundle": {
@@ -26,8 +26,16 @@
     "./package.json": "./package.json",
     "./cordis.patch.yml": "./cordis.patch.yml"
   },
-  "files": ["dist", "cordis.patch.yml", "README.md", "LICENSE", "docs/design.md"],
-  "engines": { "node": ">=24" },
+  "files": [
+    "dist",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "docs/design.md"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "build": "node --run build:client && node --run build:runtime",
     "build:runtime": "node tools/build-package.ts",

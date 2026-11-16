@@ -1,3 +1,11 @@
+var __rewriteRelativeImportExtension = (this && this.__rewriteRelativeImportExtension) || function (path, preserveJsx) {
+    if (typeof path === "string" && /^\.\.?\//.test(path)) {
+        return path.replace(/\.(tsx)$|((?:\.d)?)((?:\.[^./]+?)?)\.([cm]?)ts$/i, function (m, tsx, d, ext, cm) {
+            return tsx ? preserveJsx ? ".jsx" : ".js" : d && (!ext || !cm) ? m : (d + ext + "." + cm.toLowerCase() + "js");
+        });
+    }
+    return path;
+};
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createRequire } from 'node:module';
@@ -30,7 +38,7 @@ import { pathToFileURL } from 'node:url';
 // fix: cordis 是 ESM-only，CJS hostRequire 在宿主 Promise.all 动态 import 并发时会撞
 // ERR_INTERNAL_ASSERTION（module status 0 竞态）。改为顺序 await import 破竞态。
 // .223 已热修验证（.bak-esmrequire-20261113 / 20261114）。
-const cordisModule = await import(pathToFileURL(hostRequire.resolve('@deepseek-ai/cordis')).href);
+const cordisModule = await import(__rewriteRelativeImportExtension(pathToFileURL(hostRequire.resolve('@deepseek-ai/cordis')).href, true));
 const { symbols } = cordisModule;
 export const name = 'session-reset-inplace';
 export const inject = ['sessionQuery', 'workspaceRegistry', 'sessionController', 'agents', 'sessions', 'sessionPersistence', 'agentLoop', 'typert'];
