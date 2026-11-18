@@ -8,19 +8,15 @@ import { syncBuiltinESMExports } from 'node:module';
 import { executeReset, executeRecovery } from '../lib/reset.js';
 import { recoveryStatus, ResetJournal } from '../lib/reset-journal.ts';
 
-function fixture({ failCreate = false, activity = [], wrongPreset = false } = {}) {
+function fixture({ failCreate = false, activity = [], wrongPreset = false, bigMessages = 0, reportedBytes } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'dsh-reset-isolated-'));
   const id = 'session-11111111-1111-1111-1111-111111111111';
   const forkId = 'session-22222222-2222-2222-2222-222222222222';
   const file = (sid) => join(home, 'sessions', 'bucket', sid, 'session.json');
-  const original = { header: { id, cwd: home, agentPreset: 'standard' }, events: [
-    { type: 'turn/start', seq: 0, data: { turn: 1 } },
-    { type: 'user/message', seq: 1, data: { content: [{ type: 'text', text: 'first task' }] } },
-    { type: 'turn/end', seq: 2, data: { turn: 1 } },
-    { type: 'turn/start', seq: 3, data: { turn: 2 } },
-    { type: 'turn/end', seq: 4, data: { turn: 2 } },
-    { type: 'session/title', seq: 5, data: { title: 'original title', messageSeqs: [] } },
-  ] };
+  const shape = [['turn/start', { turn: 1 }], ['user/message', { content: [{ type: 'text', text: 'first task' }] }], ['turn/end', { turn: 1 }], ['turn/start', { turn: 2 }], ['turn/end', { turn: 2 }]];
+  for (let index = 0; index < bigMessages; index++) shape.push(['turn/start', { turn: 3 + index }], ['user/message', { content: [{ type: 'text', text: 'x'.repeat(400_000) }] }], ['turn/end', { turn: 3 + index }]);
+  shape.push(['session/title', { title: 'original title', messageSeqs: [] }]);
+  const original = { header: { id, cwd: home, agentPreset: 'standard' }, events: shape.map(([type, data], seq) => ({ type, seq, data })) };
   const save = (sid, value) => { mkdirSync(join(file(sid), '..'), { recursive: true }); writeFileSync(file(sid), JSON.stringify(value)); };
   save(id, original);
   const bytes = readFileSync(file(id));
@@ -28,6 +24,7 @@ function fixture({ failCreate = false, activity = [], wrongPreset = false } = {}
   let locked = false;
   let released = false;
   let forkCalls = 0;
+  const forkRequests = [];
   const lifecycle = {
     async run(sid, operation) {
       if (sid === id) { assert.equal(locked, false); locked = true; }
@@ -38,15 +35,18 @@ function fixture({ failCreate = false, activity = [], wrongPreset = false } = {}
   };
   const persistence = {
     async flush() {},
-    async stat(sid) { return existsSync(file(sid)) ? { sizeBytes: readFileSync(file(sid)).length } : undefined; },
+    async stat(sid) { return existsSync(file(sid)) ? { sizeBytes: reportedBytes ?? readFileSync(file(sid)).length } : undefined; },
     async open(sid) { return { header: JSON.parse(readFileSync(file(sid), 'utf8')).header, read: async () => ({ events: JSON.parse(readFileSync(file(sid), 'utf8')).events }), close: async () => {} }; },
   };
   const controller = {
-    async fork() {
+    async fork(request) {
       assert.ok(released, 'writer must close before the backup is observed');
       forkCalls++;
+      forkRequests.push(request);
       const source = JSON.parse(readFileSync(file(id), 'utf8'));
-      save(forkId, { header: { ...source.header, id: forkId }, events: source.events });
+      const cut = request.atSeq === undefined ? source.events.length : source.events.findIndex((event) => event.seq === request.atSeq) + 1;
+      assert.ok(cut > 0, 'fork boundary must name an existing event');
+      save(forkId, { header: { ...source.header, id: forkId }, events: source.events.slice(0, cut) });
       return { sessionId: forkId };
     },
     async create(request) {
@@ -77,7 +77,7 @@ function fixture({ failCreate = false, activity = [], wrongPreset = false } = {}
   const rows = [];
   const ledger = { append(record) { const row = { at: rows.length + 1, ...record }; rows.push(row); return row; } };
   const run = (options = {}, request = {}) => executeReset(ctx, ledger, lifecycle, home, { sessionId: id, confirmShortId: id.slice(8, 16), ...request }, { defaultK: 12, handoffHardCapKB: 512, buildHandoff: () => ({ k: 12, recent_messages: [{ role: 'user', text: 'task history' }] }), ...options });
-  return { home, file, id, run, bytes, rows, ctx, ledger, lifecycle, services, released: () => released, forkCalls: () => forkCalls };
+  return { home, file, id, run, bytes, rows, ctx, ledger, lifecycle, services, released: () => released, forkCalls: () => forkCalls, forkRequests };
 }
 
 test('reset completes only after a new one-turn handoff is durably read back', async () => {
@@ -87,6 +87,8 @@ test('reset completes only after a new one-turn handoff is durably read back', a
   assert.equal(value.verified, true);
   assert.equal(value.before.totalTurns, 2);
   assert.equal(value.after.totalTurns, 1);
+  assert.equal(value.backupTrimmedToSeq, undefined, 'small sessions keep the full-history fork');
+  assert.equal(f.forkRequests.at(-1).atSeq, 5, 'small sessions fork through the last event');
   assert.equal(JSON.parse(readFileSync(f.file(f.id), 'utf8')).events.find((event) => event.type === 'session/title').data.title, 'original title');
   assert.ok(existsSync(join(value.quarantine, 'original', 'sessions', 'bucket', f.id, 'session.json')));
   assert.deepEqual(readFileSync(join(value.quarantine, 'original', 'sessions', 'bucket', f.id, 'session.json')), f.bytes);
@@ -111,6 +113,25 @@ test('the protected system head and handoff share one open turn with a closed st
   assert.equal(head.data.message.source.kind, 'system-prompt');
   assert.ok(head.data.message.id);
   assert.deepEqual(head.data.message.content, []);
+});
+
+test('an oversized source backs up as a trimmed tail snapshot and still resets verified', async () => {
+  const f = fixture({ bigMessages: 3, reportedBytes: 49 * 1024 * 1024 });
+  const value = await f.run({ forkSnapshotLimitKB: 1024 });
+  assert.equal(value.phase, 'DONE');
+  assert.equal(value.verified, true);
+  const trimmedTo = value.backupTrimmedToSeq;
+  assert.ok(Number.isSafeInteger(trimmedTo) && trimmedTo >= 0 && trimmedTo < value.before.totalEvents - 1, 'oversized fork must cut before the last event');
+  assert.equal(f.forkRequests.at(-1).atSeq, trimmedTo, 'fork is bounded to the tail snapshot boundary');
+  const snapshot = JSON.parse(readFileSync(f.file(value.forkId), 'utf8'));
+  assert.equal(snapshot.events.at(-1).seq, trimmedTo, 'snapshot holds exactly the verified prefix');
+  assert.ok(snapshot.events.length < value.before.totalEvents);
+  const forkRow = f.rows.find((row) => row.step === 'FORK');
+  assert.equal(forkRow.detail.trimmedToSeq, trimmedTo);
+  assert.ok(forkRow.detail.skippedEvents > 0);
+  const handoff = JSON.parse(readFileSync(f.file(f.id), 'utf8')).events.find((event) => event.type === 'user/message').data.content[0].text;
+  assert.ok(handoff.includes('已裁剪') && handoff.includes(String(trimmedTo)), 'the rebuilt handoff names the trimmed snapshot and the preserved original');
+  assert.deepEqual(readFileSync(join(value.quarantine, 'original', 'sessions', 'bucket', f.id, 'session.json')), f.bytes, 'full original remains byte-exact in quarantine');
 });
 
 test('rebirth defaults to the original preset and can explicitly choose another on the same ID', async () => {

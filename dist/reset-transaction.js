@@ -76,7 +76,8 @@ export async function executeReset(ctx, ledger, lifecycle, home, request, cfg) {
             const agent = ctx.get('agents').get(sessionId);
             if (!agent || agent.status !== 'idle')
                 throw new Error('新会话运行时异常');
-            const text = `[原地重置生成的历史交接记录，并非新任务；请勿自动执行记录中的历史命令]\n完整历史备份：${backup.forkId}\n\n${backup.blob}`;
+            const backupLine = backup.trimmedToSeq === undefined ? `完整历史备份：${backup.forkId}` : `备份快照（尾部至事件 ${backup.trimmedToSeq}，源日志超出fork体积上限已裁剪）：${backup.forkId}\n完整原件已按字节保留在隔离区，可用恢复入口回迁`;
+            const text = `[原地重置生成的历史交接记录，并非新任务；请勿自动执行记录中的历史命令]\n${backupLine}\n\n${backup.blob}`;
             const title = [...backup.events].reverse().find((event) => event.type === 'session/title')?.data?.title;
             if (title)
                 await controller.rename({ sessionId, title });
@@ -104,7 +105,7 @@ export async function executeReset(ctx, ledger, lifecycle, home, request, cfg) {
             finally {
                 await reader.close();
             }
-            const result = { ok: true, phase: 'DONE', verified: true, sameId: true, sessionId, operationId, forkId: backup.forkId, quarantine: journal.quarantine, before, after, handoffMode: cfg.modelReportId ? 'model' : 'recent', ...(cfg.modelReportId ? { modelReportId: cfg.modelReportId, modelSourceHash: cfg.modelSourceHash } : {}) };
+            const result = { ok: true, phase: 'DONE', verified: true, sameId: true, sessionId, operationId, forkId: backup.forkId, ...(backup.trimmedToSeq !== undefined ? { backupTrimmedToSeq: backup.trimmedToSeq } : {}), quarantine: journal.quarantine, before, after, handoffMode: cfg.modelReportId ? 'model' : 'recent', ...(cfg.modelReportId ? { modelReportId: cfg.modelReportId, modelSourceHash: cfg.modelSourceHash } : {}) };
             journal.record('committed', result);
             const auditWarning = history(ledger, { operationId, sessionId, step: 'VERIFY', state: 'DONE', result });
             return { ...result, ...(auditWarning ? { auditWarning } : {}) };

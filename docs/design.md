@@ -6,7 +6,7 @@
 
 - `lib/session-lifecycle.js` 针对已验证的 AgentLoop/Cordis 布局，以唯一active `agentLoop.scope(id)` 和当前Agent/Session身份为守卫，释放同ID完整`agentLoop.lifecycle(id)` owner。只释放内部scope虽会detach运行时，却留下外层effect闭包继续引用旧Agent/Session。已结束的同ID遗留owner也一并注销；缺失完整owner或布局未知时拒绝修改存储。
 - 并发闸覆盖目标会话的输入、创建、准备与恢复入口，其他会话可继续工作。
-- `lib/backup.js` 将 fork 的持久化事件前缀与原事件逐项比较。备份大小、行数相近不能代替该核验。
+- `lib/backup.js` 将 fork 的持久化事件前缀与原事件逐项比较。备份大小、行数相近不能代替该核验。源日志超过 `forkSnapshotLimitKB`（默认 48MiB）时改为预算内最大尾部前缀的快照 fork（递归字节估算选边界，不构建大字符串），避开宿主对巨史 fork 的 V8 字符串上限；完整原件仍由隔离区逐字节指纹保全，裁剪在账本、回执与交接文本中显式标注。
 - `lib/agent-preset.ts` 从正式投影/持久化选择事件读取原预设。执行请求可选 `agentPreset`，省略沿用原预设；指定时用宿主 `agentPresets.resolve()` 在释放前校验，并在隔离前复检。创建同ID会话时显式传入已解析ID，独立读回必须匹配。近期采样与模型候选共享此路径，失败始终恢复原预设。
 - `lib/reset-transaction.ts` 组织执行与显式恢复；`lib/reset.js` 只保留既有导入入口。新日志先写 `turn/start`，再写 `step/start → system/message → step/end` 建立可替换的 protectedHead，最后写交接 `user/message → turn/end`；头部步骤也必须位于这一轮内。
 - `lib/reset-journal.ts` 在 `session-reset/transactions/<operationId>/` 原子发布不可变清单，记录原路径、SHA-256、字节数和文件数。每步状态写入新的事件文件并fsync；隔离原件位于 `quarantine/<operationId>/original/`。
@@ -69,6 +69,8 @@ UI保存内存观测到completed回执，刷新后仍展示堆/RSS变化。它�
 宿主自动TYPERT loader按包名长期缓存基础接口清单。当前自动入口只发布空清单，本包已导出的 `/preview` 子模块贡献拥有上述接口。旧版缓存的 `workspaceRegistry` 贡献保持原拥有者，新命名空间与之并存；卸载仅移除自己的服务和贡献，不重载全局缓存。
 
 `src/client.ts` 是浏览器单一源码；`tools/build-client.ts` 生成 `lib/client.js`，`tools/build-package.ts` 将所有发行入口编译到 `dist/*.js` 并改写 `.ts` 相对导入。普通 `node_modules` 安装不再依赖 Node 类型擦除。
+
+一键自动重置的编排完全在客户端：`按评估重置` 自动串起筛选预览→轮询→报告准入（与手动预览共用同一严格校验）→`sessionResetExecuteModel`，仅 `pass` 报告可执行，失败/灰带停在中止态且不退回近期采样；`全套全选重置` 直接调用 `sessionResetExecute` 并携带 `k:32`（后端校验 4–32）。自动任务保存在弹窗之外的模块层 store，关闭弹窗、切换会话均不打断；shell.overlay 同层渲染右下角浮标（评估/重置中滑动条与脉冲动效、完成回执、失败详情），动效 keyframes 由插件自者注入并在卸载时移除。两种模式都跳过短ID输入（按钮即确认，绑定当前弹窗会话）；同一会话同时仅一个自动任务，自动运行期间禁用手动预览与执行入口；后端全部校验不变。完成回执沿用 completedKey 存储，刷新后仍可回看。
 
 续接目标输入前展示候选主题数量、紧凑复选列表及实际分析模型，支持同时勾选多个主题。所有标题优先同屏，选中后才显示详细目标与引用；成功返回时滚动到选择区域。失败明确显示“暂无可选主题”。采用时重新核对主题任务所属会话与当前模型/游标，只填目标并清空旧候选及确认。没有自动启动付费主题分析，普通打开预览仍只读取；用户点击分析后按所选会话模型正常产生用量。
 

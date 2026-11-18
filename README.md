@@ -4,13 +4,22 @@
 
 正式仓库：[NelsonLongxiang/dsh-session-inplace-reset](https://github.com/NelsonLongxiang/dsh-session-inplace-reset)。
 
-当前版本 **0.12.2**（修正重建时 `turn/start` 必须先于 `step/start` 的顺序），已验证宿主为 **DSH 0.2.1-rc.2 / Cordis 4.0.5 / Node 24**。单会话释放使用有边界的宿主适配；不匹配的运行时形状会拒绝操作。
+当前版本 **0.13.1**（超大会话备份 fork 自动裁剪为尾部快照，规避宿主 V8 字符串上限；0.13.0 新增一键自动重置并修正重建轮次顺序），已验证宿主为 **DSH 0.2.1-rc.2 / Cordis 4.0.5 / Node 24**。单会话释放使用有边界的宿主适配；不匹配的运行时形状会拒绝操作。
 
 ## 使用
 
 在左侧会话行选择 **⋯ → 原地重置…**。预览绑定该行的完整会话 ID，输入八位短 ID 后才允许执行。
 
 **重生后的 Agent 预设** 默认沿用原会话，也可从宿主当前预设列表选择另一个。列表标明默认项和不可用项；更改选择会清空已输入的确认短ID。近期采样与模型候选两种重置均支持此选择。执行前校验可用性，完成后独立读回预设ID；备份保留原预设，失败恢复原会话。
+
+**一键自动重置（0.13.0）**：弹窗内提供两个自动模式按钮，点击即自动执行并转入后台，可关闭弹窗、继续查看其他会话，右下角浮标带进度动效显示阶段与结果，完成后可从浮标重新打开校验回执。
+
+**超大会话（issue #1）**：源日志超过 `forkSnapshotLimitKB`（默认 49152，即 48MiB）时，备份 fork 不再复制全量历史，而是按预算取最大尾部前缀（`atSeq` 边界，开放轮由宿主合成闭合）；宿主对巨史 fork 会撞 V8 字符串上限（`RangeError: Invalid string length`）。裁剪只影响备份快照：交接采样仍读全量尾部，完整原件始终由隔离区逐字节 SHA-256 指纹保全，恢复入口不变；回执与交接文本标明 `backupTrimmedToSeq`。
+
+- **按评估重置**：自动运行模型筛选与核对（产生模型调用，默认续接范围）；仅当报告完整通过时自动应用候选并重置，未通过即停止并显示原因，不退回近期采样。
+- **全套全选重置**：不调用模型，按最大 32 轮全量采样直接备份并重置。
+
+两种模式都跳过短ID输入，由按钮绑定当前弹窗所示会话；同一会话同时只允许一个自动任务，手动操作与自动任务互斥。后端仍执行同ID、备份、读回与预设的全部校验。
 
 - 运行中、有后台活动或不能确认生命周期拥有者时，存储修改前停止。
 - 备份按完整事件前缀独立读回核验，不以压缩大小或事件数相近判断完整性。
@@ -36,7 +45,7 @@
 git clone https://github.com/NelsonLongxiang/dsh-session-inplace-reset.git
 cd dsh-session-inplace-reset
 npm pack --ignore-scripts
-dsh plugin --profile web add ./local-dsh-session-inplace-reset-0.12.2.tgz --save-exact
+dsh plugin --profile web add ./local-dsh-session-inplace-reset-0.13.1.tgz --save-exact
 ```
 
 上述打包使用已提交产物。修改源码后按下方开发流程重新生成，再打包；不要只复制 `.ts` 文件作为发行入口。
@@ -117,13 +126,13 @@ node test/check-live-reset.mjs --inspect-only
 显式检查：
 
 ```sh
-node test/check-install.ts --launcher /path/to/dsh/lib/bin.js --archive /path/to/local-dsh-session-inplace-reset-0.12.2.tgz
+node test/check-install.ts --launcher /path/to/dsh/lib/bin.js --archive /path/to/local-dsh-session-inplace-reset-0.13.1.tgz
 ```
 
 此检查复用已有 DSH 安装，在独立 `DSH_HOME` 中离线安装发行包、使用随机 loopback 端口启动隔离实例，验证旧预览入口和显式目标新入口的兼容性、原生凭证持久化和真实会话文件的中断恢复。只停止自己创建的隔离进程，不操作当前服务；凭证测试只使用虚构 Key。
 
 ```sh
-node test/check-install.ts --launcher /path/to/dsh/lib/bin.js --archive /path/to/local-dsh-session-inplace-reset-0.12.2.tgz --memory --memory-large
+node test/check-install.ts --launcher /path/to/dsh/lib/bin.js --archive /path/to/local-dsh-session-inplace-reset-0.13.1.tgz --memory --memory-large
 ```
 
 `--memory`只在自有隔离home安装临时观测夹具，生成16MiB合成历史；`--memory-large`测试16/32/48MiB。记录自然空闲、诊断GC、查询缓存刷新、解码缓存淘汰与完整owner释放对照，不使用业务会话、不调用模型、不写原始堆快照。所有测量阶段PID保持不变；测试结束只关闭其自有进程。

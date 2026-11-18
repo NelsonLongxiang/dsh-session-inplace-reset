@@ -8,3 +8,4 @@
         defaultK: 12
         handoffHardCapKB: 512
         handoffTargetKB: 64
+        forkSnapshotLimitKB: 49152
