@@ -57,7 +57,7 @@ export async function observeFreeSnapshot(ctx, sessionId, limitBytes) {
     const stat = await persistence.stat(sessionId);
     if (!isOversized(stat?.sizeBytes, limitBytes))
         return null;
-    const projections = await ctx.get('sessionController').projections({ sessionId });
+    const projections = await ctx.get('sessionController').projections({ sessionId }, new AbortController().signal);
     if (!projections || projections.kind !== 'sequenced')
         throw new Error('超大会话的投影暂不可用（迁移中），未执行重置');
     const lastSeq = projections.asOfSeq;

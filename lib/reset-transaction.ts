@@ -18,7 +18,7 @@ async function measure(ctx: HostContext, id: string, limitBytes?: number) {
   const stored = await ctx.get('sessionPersistence').stat(id);
   if (limitBytes !== undefined && isOversized(stored?.sizeBytes, limitBytes)) {
     // 超大会话不物化全量事件：总数取投影游标，轮数不可廉价获得，回执如实标注。
-    const projections = await ctx.get('sessionController').projections({ sessionId: id });
+    const projections = await ctx.get('sessionController').projections({ sessionId: id }, new AbortController().signal);
     if (!projections || projections.kind !== 'sequenced') throw new Error('超大会话的投影暂不可用（迁移中），未执行重置');
     return { totalEvents: projections.asOfSeq + 1, totalTurns: null, oversized: true, sizeBytes: stored?.sizeBytes ?? null, sessionId: id, agentPreset: projections.values?.agentPreset ?? null };
   }
