@@ -6,7 +6,7 @@
 
 - `lib/session-lifecycle.js` 针对已验证的 AgentLoop/Cordis 布局，以唯一active `agentLoop.scope(id)` 和当前Agent/Session身份为守卫，释放同ID完整`agentLoop.lifecycle(id)` owner。只释放内部scope虽会detach运行时，却留下外层effect闭包继续引用旧Agent/Session。已结束的同ID遗留owner也一并注销；缺失完整owner或布局未知时拒绝修改存储。
 - 并发闸覆盖目标会话的输入、创建、准备与恢复入口，其他会话可继续工作。
-- `lib/backup.js` 将 fork 的持久化事件前缀与原事件逐项比较。备份大小、行数相近不能代替该核验。源日志超过 `forkSnapshotLimitKB`（默认 48MiB）时改为预算内最大尾部前缀的快照 fork（递归字节估算选边界，不构建大字符串），避开宿主对巨史 fork 的 V8 字符串上限；完整原件仍由隔离区逐字节指纹保全，裁剪在账本、回执与交接文本中显式标注。
+- `lib/backup.js` 将 fork 的持久化事件前缀与原事件逐项比较。备份大小、行数相近不能代替该核验。源日志压缩体积×5 超过 fork 快照预算（forkSnapshotLimitKB，默认 48MiB）时走超大路径：全程不物化全量事件（预览/预检/备份一致），备份 fork 按比例截取前缀、快照做结构化校验，完整性由隔离区逐字节原件担保；裁剪在账本、回执与交接文本中显式标注，超大回执的 totalTurns 为 null。
 - `lib/agent-preset.ts` 从正式投影/持久化选择事件读取原预设。执行请求可选 `agentPreset`，省略沿用原预设；指定时用宿主 `agentPresets.resolve()` 在释放前校验，并在隔离前复检。创建同ID会话时显式传入已解析ID，独立读回必须匹配。近期采样与模型候选共享此路径，失败始终恢复原预设。
 - `lib/reset-transaction.ts` 组织执行与显式恢复；`lib/reset.js` 只保留既有导入入口。新日志先写 `turn/start`，再写 `step/start → system/message → step/end` 建立可替换的 protectedHead，最后写交接 `user/message → turn/end`；头部步骤也必须位于这一轮内。
 - `lib/reset-journal.ts` 在 `session-reset/transactions/<operationId>/` 原子发布不可变清单，记录原路径、SHA-256、字节数和文件数。每步状态写入新的事件文件并fsync；隔离原件位于 `quarantine/<operationId>/original/`。

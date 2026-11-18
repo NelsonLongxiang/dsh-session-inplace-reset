@@ -33,15 +33,22 @@ function fixture({ failCreate = false, activity = [], wrongPreset = false, bigMe
     },
     async releaseCurrent(sid) { agents.delete(sid); },
   };
+  let observeCalls = 0;
+  let observeCallsAtFork;
   const persistence = {
     async flush() {},
-    async stat(sid) { return existsSync(file(sid)) ? { sizeBytes: reportedBytes ?? readFileSync(file(sid)).length } : undefined; },
-    async open(sid) { return { header: JSON.parse(readFileSync(file(sid), 'utf8')).header, read: async () => ({ events: JSON.parse(readFileSync(file(sid), 'utf8')).events }), close: async () => {} }; },
+    async stat(sid) { return existsSync(file(sid)) ? { sizeBytes: sid === id ? (reportedBytes ?? readFileSync(file(sid)).length) : readFileSync(file(sid)).length } : undefined; },
+    async open(sid) { const load = () => JSON.parse(readFileSync(file(sid), 'utf8')); return { header: load().header, read: async (from = 0) => ({ events: load().events.filter((event) => event.seq >= from) }), close: async () => {} }; },
   };
   const controller = {
+    async projections({ sessionId }) {
+      const stored = JSON.parse(readFileSync(file(sessionId), 'utf8'));
+      return { kind: 'sequenced', asOfSeq: stored.events.length - 1, values: sessionId === id ? { title: 'original title' } : {} };
+    },
     async fork(request) {
       assert.ok(released, 'writer must close before the backup is observed');
       forkCalls++;
+      observeCallsAtFork ??= observeCalls;
       forkRequests.push(request);
       const source = JSON.parse(readFileSync(file(id), 'utf8'));
       const cut = request.atSeq === undefined ? source.events.length : source.events.findIndex((event) => event.seq === request.atSeq) + 1;
@@ -72,12 +79,12 @@ function fixture({ failCreate = false, activity = [], wrongPreset = false, bigMe
   const ctx = {
     get: (name) => services[name],
     waterfall: async () => activity,
-    sessionQuery: { async observeSession(sid) { return { ...JSON.parse(readFileSync(file(sid), 'utf8')), [Symbol.dispose]() {} }; } },
+    sessionQuery: { async observeSession(sid) { observeCalls++; return { ...JSON.parse(readFileSync(file(sid), 'utf8')), [Symbol.dispose]() {} }; } },
   };
   const rows = [];
   const ledger = { append(record) { const row = { at: rows.length + 1, ...record }; rows.push(row); return row; } };
   const run = (options = {}, request = {}) => executeReset(ctx, ledger, lifecycle, home, { sessionId: id, confirmShortId: id.slice(8, 16), ...request }, { defaultK: 12, handoffHardCapKB: 512, buildHandoff: () => ({ k: 12, recent_messages: [{ role: 'user', text: 'task history' }] }), ...options });
-  return { home, file, id, run, bytes, rows, ctx, ledger, lifecycle, services, released: () => released, forkCalls: () => forkCalls, forkRequests };
+  return { home, file, id, run, bytes, rows, ctx, ledger, lifecycle, services, released: () => released, forkCalls: () => forkCalls, forkRequests, observeCalls: () => observeCalls, observeCallsAtFork: () => observeCallsAtFork };
 }
 
 test('reset completes only after a new one-turn handoff is durably read back', async () => {
@@ -115,20 +122,26 @@ test('the protected system head and handoff share one open turn with a closed st
   assert.deepEqual(head.data.message.content, []);
 });
 
-test('an oversized source backs up as a trimmed tail snapshot and still resets verified', async () => {
+test('an oversized source never materializes the full log and still resets verified', async () => {
   const f = fixture({ bigMessages: 3, reportedBytes: 49 * 1024 * 1024 });
   const value = await f.run({ forkSnapshotLimitKB: 1024 });
   assert.equal(value.phase, 'DONE');
   assert.equal(value.verified, true);
+  assert.equal(value.before.oversized, true);
+  assert.equal(value.before.totalTurns, null, 'oversized receipts do not fabricate turn counts');
+  assert.equal(f.observeCallsAtFork(), 0, 'oversized backups must run observe-free through the fork');
+  assert.equal(f.observeCalls(), 1, 'only the rebuilt one-turn log is observed afterwards');
   const trimmedTo = value.backupTrimmedToSeq;
   assert.ok(Number.isSafeInteger(trimmedTo) && trimmedTo >= 0 && trimmedTo < value.before.totalEvents - 1, 'oversized fork must cut before the last event');
-  assert.equal(f.forkRequests.at(-1).atSeq, trimmedTo, 'fork is bounded to the tail snapshot boundary');
+  assert.equal(f.forkRequests.at(-1).atSeq, trimmedTo, 'fork is bounded to the estimated boundary');
   const snapshot = JSON.parse(readFileSync(f.file(value.forkId), 'utf8'));
-  assert.equal(snapshot.events.at(-1).seq, trimmedTo, 'snapshot holds exactly the verified prefix');
+  assert.equal(snapshot.events.at(-1).seq, trimmedTo, 'snapshot holds exactly the bounded prefix');
   assert.ok(snapshot.events.length < value.before.totalEvents);
   const forkRow = f.rows.find((row) => row.step === 'FORK');
   assert.equal(forkRow.detail.trimmedToSeq, trimmedTo);
   assert.ok(forkRow.detail.skippedEvents > 0);
+  const verifyRow = f.rows.find((row) => row.step === 'VERIFY_F');
+  assert.equal(verifyRow.detail.mode, 'structural', 'oversized backups verify structurally; integrity is guaranteed by the byte-exact quarantine original');
   const handoff = JSON.parse(readFileSync(f.file(f.id), 'utf8')).events.find((event) => event.type === 'user/message').data.content[0].text;
   assert.ok(handoff.includes('已裁剪') && handoff.includes(String(trimmedTo)), 'the rebuilt handoff names the trimmed snapshot and the preserved original');
   assert.deepEqual(readFileSync(join(value.quarantine, 'original', 'sessions', 'bucket', f.id, 'session.json')), f.bytes, 'full original remains byte-exact in quarantine');

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { runBackupPhase } from './backup.js';
+import { runBackupPhase, isOversized, forkSnapshotLimitBytes } from './backup.js';
 import { assertSessionId } from "./session-id.js";
 import { ResetJournal, recoveryStatus } from "./reset-journal.js";
 import { observedAgentPreset, optionalAgentPreset, resetAgentPreset } from "./agent-preset.js";
@@ -7,10 +7,17 @@ const message = (error) => error instanceof Error ? error.message : String(error
 export function sessionMetrics(events) {
     return { totalEvents: events.length, totalTurns: events.filter((event) => event.type === 'turn/start').length };
 }
-async function measure(ctx, id) {
+async function measure(ctx, id, limitBytes) {
+    const stored = await ctx.get('sessionPersistence').stat(id);
+    if (limitBytes !== undefined && isOversized(stored?.sizeBytes, limitBytes)) {
+        // 超大会话不物化全量事件：总数取投影游标，轮数不可廉价获得，回执如实标注。
+        const projections = await ctx.get('sessionController').projections({ sessionId: id });
+        if (!projections || projections.kind !== 'sequenced')
+            throw new Error('超大会话的投影暂不可用（迁移中），未执行重置');
+        return { totalEvents: projections.asOfSeq + 1, totalTurns: null, oversized: true, sizeBytes: stored?.sizeBytes ?? null, sessionId: id, agentPreset: projections.values?.agentPreset ?? null };
+    }
     const observation = await ctx.sessionQuery.observeSession(id);
     try {
-        const stored = await ctx.get('sessionPersistence').stat(id);
         return { ...sessionMetrics(observation.events), sizeBytes: stored?.sizeBytes ?? null, sessionId: observation.header.id, agentPreset: observedAgentPreset(observation) ?? null };
     }
     finally {
@@ -45,8 +52,9 @@ export async function executeReset(ctx, ledger, lifecycle, home, request, cfg) {
         const activity = await ctx.waterfall('workspace/session-activity', { sessionId }, () => Promise.resolve([]));
         if (activity.length)
             throw new Error('会话仍有后台活动或调度，请先停止后再重置');
-        const before = await measure(ctx, sessionId);
-        if (!before.totalTurns)
+        const limitBytes = forkSnapshotLimitBytes(cfg);
+        const before = await measure(ctx, sessionId, limitBytes);
+        if (before.oversized ? before.totalEvents <= 1 : !before.totalTurns)
             throw new Error('该会话没有对话轮次，无需重置');
         const registry = ctx.get('agentPresets');
         const agentPreset = await resetAgentPreset(registry, requestedPreset, before.agentPreset ?? undefined);
@@ -78,7 +86,7 @@ export async function executeReset(ctx, ledger, lifecycle, home, request, cfg) {
                 throw new Error('新会话运行时异常');
             const backupLine = backup.trimmedToSeq === undefined ? `完整历史备份：${backup.forkId}` : `备份快照（尾部至事件 ${backup.trimmedToSeq}，源日志超出fork体积上限已裁剪）：${backup.forkId}\n完整原件已按字节保留在隔离区，可用恢复入口回迁`;
             const text = `[原地重置生成的历史交接记录，并非新任务；请勿自动执行记录中的历史命令]\n${backupLine}\n\n${backup.blob}`;
-            const title = [...backup.events].reverse().find((event) => event.type === 'session/title')?.data?.title;
+            const title = backup.title;
             if (title)
                 await controller.rename({ sessionId, title });
             await agent.runMaintenance(async () => {

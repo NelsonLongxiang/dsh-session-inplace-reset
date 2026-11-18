@@ -8,14 +8,14 @@ import type { EvaluationSettingsView } from '../lib/evaluation-settings.ts';
 
 import type { recoveryStatus, listRecoveryStatus } from '../lib/reset-journal.ts';
 
-type Complete = { ok: true; phase: 'DONE'; verified: true; sameId: true; sessionId: string; before: { totalTurns: number; totalEvents: number }; after: { totalTurns: number; totalEvents: number; agentPreset?: string | null }; forkId?: string; backupTrimmedToSeq?: number; operationId?: string; auditWarning?: string; handoffMode?: 'model' | 'recent'; modelReportId?: string; modelSourceHash?: string; memory?: ResetMemoryReport };
+type Complete = { ok: true; phase: 'DONE'; verified: true; sameId: true; sessionId: string; before: { totalTurns: number | null; totalEvents: number }; after: { totalTurns: number; totalEvents: number; agentPreset?: string | null }; forkId?: string; backupTrimmedToSeq?: number; operationId?: string; auditWarning?: string; handoffMode?: 'model' | 'recent'; modelReportId?: string; modelSourceHash?: string; memory?: ResetMemoryReport };
 type Recovered = { ok: true; phase: 'RECOVERED'; verified: true; sameId: true; sessionId: string; operationId: string; after?: { totalTurns: number; totalEvents: number }; auditWarning?: string };
 type RecoveryView = ReturnType<typeof recoveryStatus> & { warnings: string[] };
 type RecoveryIndexView = ReturnType<typeof listRecoveryStatus> & { warnings: string[] };
 type Success = Complete | Recovered;
 type Result = Success | { phase: 'NOT_RESET'; note: string; forkId?: string };
 type AgentPresetRow = { id: string; name?: string; description?: string; isDefault: boolean; broken?: string };
-type DryRun = { topicModel?: { selection: SessionModelSelection; source: 'session' | 'default' }; agentPreset?: string | null; sessionId: string; totalTurns: number; totalEvents: number; messages: number; size: number; k: number; canReset?: boolean; blockedReason?: string };
+type DryRun = { topicModel?: { selection: SessionModelSelection; source: 'session' | 'default' }; agentPreset?: string | null; sessionId: string; totalTurns: number | null; totalEvents: number; messages: number; size: number; k: number; oversized?: boolean; canReset?: boolean; blockedReason?: string };
 type DialogTarget = { sessionId: string; displayTitle?: string; completed?: Success; recoveryOnly?: true };
 type OverlayTarget = DialogTarget | { kind: 'recoveries' };
 type DialogProps = DialogTarget & { onClose: () => void };
@@ -31,7 +31,7 @@ window.__ModuleLoader__.load({
     const { MenuItemButton, Modal, Button } = require('@deepseek-ai/dsh-client-ui-primitives') as Record<string, ReactTypes.ComponentType<any>>;
     const h = React.createElement;
     const completedKey = '@local/dsh-session-inplace-reset/completed';
-    const isSuccess = (value: any, id: string): value is Success => value?.ok === true && value.verified === true && value.sameId === true && value.sessionId === id && (value.phase === 'DONE' ? Number.isSafeInteger(value.before?.totalTurns) && Number.isSafeInteger(value.after?.totalTurns) : value.phase === 'RECOVERED' && typeof value.operationId === 'string');
+    const isSuccess = (value: any, id: string): value is Success => value?.ok === true && value.verified === true && value.sameId === true && value.sessionId === id && (value.phase === 'DONE' ? (value.before?.totalTurns === null || Number.isSafeInteger(value.before?.totalTurns)) && Number.isSafeInteger(value.after?.totalTurns) : value.phase === 'RECOVERED' && typeof value.operationId === 'string');
 
     const validRecovery = (value: RecoveryIndexView) => !!value && Array.isArray(value.operations) && Array.isArray(value.issues) && Array.isArray(value.warnings) && value.issues.every((item) => typeof item === 'string') && value.warnings.every((item) => typeof item === 'string') && value.operations.every((operation) => /^session-[a-f0-9-]{36}$/i.test(operation.sessionId) && /^[a-f0-9-]{36}$/i.test(operation.operationId) && typeof operation.createdAt === 'string');
 
@@ -346,8 +346,8 @@ window.__ModuleLoader__.load({
           error && h('p', { role: 'alert' }, error),
           !shown && !recoveryOnly && !loading && !dry && h(Button, { variant: 'outline', onClick: () => setAttempt((n) => n + 1) }, '重新读取预览'),
           dry && h('div', { 'data-inplace-reset-stats': true, style: { margin: '16px 0' } },
-            h('div', null, `原日志轮次：${Number.isSafeInteger(dry.totalTurns) ? dry.totalTurns.toLocaleString() : '未提供'}`),
-            h('div', null, `事件数：${dry.totalEvents.toLocaleString()}`),
+            h('div', null, `原日志轮次：${typeof dry.totalTurns === 'number' ? dry.totalTurns.toLocaleString() : dry.oversized ? '超大日志，未全量统计' : '未提供'}`),
+            h('div', null, `事件数：${dry.totalEvents.toLocaleString()}${dry.oversized ? '（超大日志：只读尾部窗口，完整原件由隔离区保全）' : ''}`),
             h('div', null, `消息数：${dry.messages.toLocaleString()}`),
             h('div', null, `交接包大小：${((selectedModel?.size ?? dry.size) / 1024).toFixed(1)} KB`),
             h('div', null, selectedModel ? `已选模型候选 ${selectedModel.selected.length} 个片段；新日志收敛为 1 轮交接记录` : `交接包最多采样 ${dry.k} 轮；新日志收敛为 1 轮交接记录`),
@@ -491,7 +491,7 @@ window.__ModuleLoader__.load({
           ),
           shown && h('div', { role: shown.phase === 'NOT_RESET' ? 'alert' : 'status', 'data-inplace-reset-result': shown.phase },
             h('b', null, shown.phase === 'DONE' ? '重置已完成并校验' : shown.phase === 'RECOVERED' ? '原日志已恢复并校验' : '未重置'),
-            shown.phase === 'DONE' && h('p', { 'data-inplace-reset-after': true }, `原日志轮次：${shown.before.totalTurns} → ${shown.after.totalTurns}；事件数：${shown.before.totalEvents} → ${shown.after.totalEvents}`),
+            shown.phase === 'DONE' && h('p', { 'data-inplace-reset-after': true }, `原日志轮次：${Number.isSafeInteger(shown.before.totalTurns) ? shown.before.totalTurns : '未统计'} → ${shown.after.totalTurns}；事件数：${shown.before.totalEvents} → ${shown.after.totalEvents}`),
             shown.phase === 'DONE' && shown.memory && Array.isArray(shown.memory.warnings) && ['heapUsed', 'rss'].every((key) => Number.isFinite(shown.memory?.before?.[key as keyof NodeJS.MemoryUsage]) && Number.isFinite(shown.memory?.after?.[key as keyof NodeJS.MemoryUsage])) && h('div', { 'data-inplace-reset-memory': true },
               h('p', null, `同进程内存观测：堆 ${(shown.memory.before.heapUsed / 1048576).toFixed(1)} → ${(shown.memory.after.heapUsed / 1048576).toFixed(1)} MB；RSS ${(shown.memory.before.rss / 1048576).toFixed(1)} → ${(shown.memory.after.rss / 1048576).toFixed(1)} MB`),
               h('small', null, `已清理 ${shown.memory.queryEntries + shown.memory.persistenceEntries} 项读取缓存；${shown.memory.gcCompleted ? '已请求运行时回收' : '等待自然回收'}。其他会话活动会影响进程总量。`),
