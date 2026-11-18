@@ -67,7 +67,7 @@ socket.addEventListener('message', ({ data }) => {
   } else if (message.method === 'Fetch.requestPaused') {
     const { requestId, request } = message.params;
     const body = JSON.parse(request.postData);
-    requests.push({ method: body.method, sessionId: body.payload.args.sessionId ?? body.payload.args.request?.sessionId, modelReportId: body.payload.args.request?.modelReportId, sourceHash: body.payload.args.request?.sourceHash, agentPreset: body.payload.args.request?.agentPreset, taskId: body.payload.args.request?.taskId, continuationGoal: body.payload.args.request?.continuationGoal });
+    requests.push({ method: body.method, sessionId: body.payload.args.sessionId ?? body.payload.args.request?.sessionId, modelReportId: body.payload.args.request?.modelReportId, sourceHash: body.payload.args.request?.sourceHash, agentPreset: body.payload.args.request?.agentPreset, taskId: body.payload.args.request?.taskId, continuationGoal: body.payload.args.request?.continuationGoal, k: body.payload.args.request?.k });
     if (recoveryMode && (body.method.endsWith('/sessionResetRecoveries') || body.method.endsWith('/sessionResetRecoveryStatus'))) {
       const value = { ...(body.payload.args.sessionId ? { sessionId: body.payload.args.sessionId } : {}), operations: [recoveryFixture], issues: [], warnings: [] };
       const response = JSON.stringify({ rpcId: body.rpcId, result: { ok: true, value } });
@@ -612,6 +612,54 @@ try {
     await closePreview();
   }
   evidence.checks.push('HALTED_LIVE displays not reset', 'unverified DONE is never presented as success');
+
+  // 一键自动重置：非通过评估不执行也不退回；通过后台完成；全程可关弹窗、可切其他会话。
+  {
+    const doneReceipt = (id, mode, report) => ({ ok: true, phase: 'DONE', verified: true, sameId: true, sessionId: id, before: { totalTurns: 55, totalEvents: 4653 }, after: { totalTurns: 1, totalEvents: 10 }, forkId: `session-${crypto.randomUUID()}`, operationId: crypto.randomUUID(), ...(mode === 'model' ? { handoffMode: 'model', modelReportId: report.reportId, modelSourceHash: report.sourceHash } : { handoffMode: 'recent' }) });
+    await openPreview(second.id);
+    await until(`document.querySelector('[data-inplace-reset-stats]')?.textContent`, 'auto-mode baseline');
+    const beforeAutoFail = requests.length;
+    simulatedModel = { reportId: crypto.randomUUID(), sourceHash: 'a'.repeat(64), status: 'fail', mode: 'shadow', applied: false, auditComplete: false, batchCount: 5, requestCount: 10, coverage: { total: 128, assessed: 128, complete: true }, selected: [{ id: 'c0', seq: 0, role: 'user', sourceKind: 'user', text: '原文约束', retention: 'pass', superseded: 'fail' }], checks: ['constraints', 'state', 'faithful'].map((key) => ({ key, probability: 0.1, outcome: 'fail' })) };
+    await evaluate(`document.querySelector('[data-inplace-reset-auto-evaluate]').click()`);
+    await closePreview();
+    await until(`document.querySelector('[data-inplace-reset-auto-chip]')?.dataset.inplaceResetAutoChip === 'evaluate:failed'`, 'failed evaluation surfaced in the background chip');
+    assert.match(await evaluate(`document.querySelector('[data-inplace-reset-auto-chip]').innerText`), /未完成/);
+    assert.equal(await evaluate(`!!document.querySelector('[role="dialog"]')`), false, 'failed auto run leaves no blocking dialog');
+    assert.equal(requests.slice(beforeAutoFail).some((request) => /\/sessionResetExecute(?:Model)?$/.test(request.method)), false, 'a failed evaluation must not execute any reset');
+    await evaluate(`document.querySelector('[data-inplace-reset-auto-chip] [aria-label="移除自动重置状态"]').click()`);
+    await until(`!document.querySelector('[data-inplace-reset-auto-chip]')`, 'failed chip dismissible');
+
+    simulatedModel = { reportId: crypto.randomUUID(), sourceHash: 'a'.repeat(64), status: 'pass', mode: 'shadow', applied: false, auditComplete: true, batchCount: 5, requestCount: 10, coverage: { total: 128, assessed: 128, complete: true }, selected: [{ id: 'c0', seq: 0, role: 'user', sourceKind: 'user', text: '原文约束：禁止重启实例', retention: 'pass', superseded: 'fail' }], checks: ['constraints', 'state', 'faithful'].map((key) => ({ key, probability: 0.95, outcome: 'pass' })) };
+    simulatedExecute = doneReceipt(second.id, 'model', simulatedModel);
+    await evaluate(`document.querySelector('[data-inplace-reset-auto-evaluate]').click()`);
+    await closePreview();
+    await until(`document.querySelector('[data-inplace-reset-auto-chip]')?.dataset.inplaceResetAutoChip === 'evaluate:evaluating'`, 'auto evaluation runs after the dialog closes');
+    simulatedTask.hold = false;
+    await evaluate(`(() => { const row = [...document.querySelectorAll('[data-row-key]')].find(el => el.dataset.rowKey === ${JSON.stringify(`session:${first.id}`)}); row.click(); })()`);
+    await until(`document.querySelector('[aria-selected="true"][data-row-key]')?.getAttribute('data-row-key') === ${JSON.stringify(`session:${first.id}`)}`, 'another session browsable during auto reset');
+    await until(`document.querySelector('[data-inplace-reset-auto-chip]')?.dataset.inplaceResetAutoChip === 'evaluate:done'`, 'auto evaluation completes in background');
+    const autoExecute = requests.findLast((request) => request.method.endsWith('/sessionResetExecuteModel'));
+    assert.equal(autoExecute.sessionId, second.id);
+    assert.equal(autoExecute.modelReportId, simulatedExecute.modelReportId);
+    assert.equal(autoExecute.sourceHash, simulatedExecute.modelSourceHash);
+    await evaluate(`document.querySelector('[data-inplace-reset-auto-receipt]').click()`);
+    await until(`document.querySelector('[data-inplace-reset-result]')?.dataset.inplaceResetResult === 'DONE' && !!document.querySelector('[data-inplace-reset-applied-model]')`, 'chip reopens the verified receipt');
+    await evaluate(`document.querySelector('[data-inplace-reset-auto-chip] [aria-label="移除自动重置状态"]').click()`);
+    await closePreview();
+
+    await openPreview(second.id);
+    await until(`document.querySelector('[data-inplace-reset-stats]')?.textContent`, 'full-mode baseline');
+    simulatedExecute = doneReceipt(second.id, 'recent', null);
+    await evaluate(`document.querySelector('[data-inplace-reset-auto-full]').click()`);
+    await closePreview();
+    await until(`document.querySelector('[data-inplace-reset-auto-chip]')?.dataset.inplaceResetAutoChip === 'full:done'`, 'full auto reset completes in background');
+    const fullExecute = requests.findLast((request) => request.method.endsWith('/sessionResetExecute'));
+    assert.equal(fullExecute.sessionId, second.id);
+    assert.equal(fullExecute.k, 32);
+    await evaluate(`document.querySelector('[data-inplace-reset-auto-chip] [aria-label="移除自动重置状态"]').click()`);
+    await until(`!document.querySelector('[data-inplace-reset-auto-chip]')`, 'chips dismissed');
+  }
+  evidence.checks.push('one-click evaluation auto-applies only a passing report without falling back', 'failed auto evaluation surfaces in a non-blocking chip without executing', 'auto resets keep running after the dialog closes and other sessions stay browsable', 'full-selection auto reset executes directly with maximum sampling', 'background chip reopens the verified receipt');
   rejectPreview = true;
   await openPreview(second.id);
   await until(`document.querySelector('[role="alert"]')?.textContent.includes('预览失败验证')`, 'preview error visible');

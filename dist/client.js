@@ -34,6 +34,78 @@ window.__ModuleLoader__.load({
       return full.result.value;
     }
 
+    const delay = (ms        ) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    /** 严格校验单次评估进度视图；手动预览与自动模式共用同一准入。 */
+    function acceptPreviewProgress(value                 , sessionId        , taskId         )                  {
+      const p = value?.progress;
+      if (value?.sessionId !== sessionId || taskId !== undefined && value.taskId !== taskId || !/^[a-f0-9-]{36}$/i.test(value.taskId ?? '') || typeof value.running !== 'boolean' || !Number.isFinite(Date.parse(value.startedAt)) || !p || !Object.hasOwn(previewPhases, p.phase) || !(['completedBatches', 'totalBatches', 'running', 'concurrency', 'requestCount', 'requestLimit', 'assessed', 'sourceTotal']         ).every((key) => Number.isSafeInteger(p[key]) && p[key] >= 0) || p.completedBatches > p.totalBatches || p.running > p.concurrency || p.concurrency < 1 || p.concurrency > 4 || p.requestCount > p.requestLimit || p.assessed > p.sourceTotal) throw new Error('评估进度不完整或不属于所选任务');
+      return value;
+    }
+
+    /** 严格校验评估报告；pass 必须携带完整核对证据，与手动预览共用同一准入。 */
+    function acceptModelReport(value                         , sessionId        )              {
+      if (!value) throw new Error('评估已结束但未收到完整报告，请重新预览');
+      if (value?.sessionId !== sessionId || typeof value.reportId !== 'string' || !/^[a-f0-9-]{36}$/i.test(value.reportId) || !/^[a-f0-9]{64}$/.test(value.sourceHash) || value.mode !== 'shadow' || value.applied !== false || !['pass', 'fail', 'pending', 'unavailable'].includes(value.status) || !Array.isArray(value.selected) || !Array.isArray(value.checks) || !Number.isSafeInteger(value.coverage?.assessed) || !Number.isSafeInteger(value.coverage?.total) || value.coverage.assessed < 0 || value.coverage.total < value.coverage.assessed) throw new Error('模型预览数据不完整或不属于所选会话');
+      if (!value.selected.every((item) => typeof item?.text === 'string' && typeof item.id === 'string' && Number.isSafeInteger(item.seq)) || !value.checks.every((check) => ['constraints', 'state', 'faithful'].includes(check?.key) && Number.isFinite(check.probability) && check.probability >= 0 && check.probability <= 1 && ['pass', 'fail', 'pending'].includes(check.outcome))) throw new Error('模型预览的原文或核对项无效');
+      const context = value.continuation;
+      if (!context || context.scopeOnly !== true || typeof context.goal !== 'string' || !/^[a-f0-9]{64}$/.test(context.hash) || !Array.isArray(context.entries) || !context.entries.every((entry) => typeof entry.candidate?.id === 'string' && typeof entry.candidate.text === 'string' && Number.isSafeInteger(entry.candidate.seq) && Array.isArray(entry.kinds) && entry.kinds.every((kind) => ['task', 'constraint', 'change'].includes(kind)))) throw new Error('缺少可校验的续接目标或全局任务清单');
+      if (value.status === 'pass' && (!context.coverage.complete || !context.resolutionComplete || context.uncertain || context.overflow)) throw new Error('全局任务清单未完整核对，不能显示通过');
+      if (value.status === 'pass' && (value.auditComplete !== true || !value.coverage.complete || value.budgetOmissions && value.budgetOmissions > 0 || !value.selected.length || new Set(value.checks.map((check) => check.key)).size !== 3 || !value.checks.every((check) => check.outcome === 'pass' && check.probability >= 0.7))) throw new Error('未收到完整的模型核对，不能显示通过');
+      return value;
+    }
+
+    // 一键自动重置在弹窗之外运行：关闭弹窗、切换会话均不打断，右下角浮标持续显示进度。
+                                        
+                                                                    
+                                                                                                                                                                                    
+    const autoRuns = new Map                 ();
+    let autoCache            = [];
+    const autoListeners = new Set            ();
+    const notifyAuto = () => { autoCache = [...autoRuns.values()]; for (const listener of autoListeners) listener(); };
+    const subscribeAuto = (listener            ) => { autoListeners.add(listener); return () => autoListeners.delete(listener); };
+    const autoSnapshot = () => autoCache;
+    const autoActive = (sessionId        ) => { const run = autoRuns.get(sessionId); return !!run && (run.phase === 'evaluating' || run.phase === 'executing'); };
+    const saveReceipt = (id        , title                    , value          ) => {
+      const { ok, phase, verified, sameId, sessionId, before, after, forkId, operationId, auditWarning, handoffMode, modelReportId, modelSourceHash, memory } = value;
+      try { window.sessionStorage.setItem(completedKey, JSON.stringify({ sessionId: id, displayTitle: title, completed: { ok, phase, verified, sameId, sessionId, before, after, forkId, operationId, auditWarning, handoffMode, modelReportId, modelSourceHash, memory } })); } catch { /* 后台回执仅尽力保存；弹窗与浮标已直接展示结果。 */ }
+    };
+    /** 自动模式的执行链：评估仅在完整通过时应用候选，从不退回近期采样。 */
+    async function startAutoReset(sessionId        , displayTitle                    , mode          , agentPreset        ) {
+      if (autoActive(sessionId)) return;
+      const run          = { sessionId, displayTitle, mode, phase: mode === 'evaluate' ? 'evaluating' : 'executing', startedAt: new Date().toISOString(), task: null };
+      autoRuns.set(sessionId, run);
+      notifyAuto();
+      const confirmShortId = sessionId.slice(8, 16);
+      const finish = (patch                  ) => { Object.assign(run, patch); notifyAuto(); };
+      try {
+        if (mode === 'full') {
+          const value = await rpc          ('sessionResetExecute', { request: { sessionId, confirmShortId, k: 32, ...(agentPreset ? { agentPreset } : {}) } });
+          if (!isSuccess(value, sessionId) || value.phase !== 'DONE' || agentPreset && value.after?.agentPreset !== agentPreset) throw new Error('未收到重置成功的读回校验，不能判定完成');
+          finish({ phase: 'done', done: value });
+          saveReceipt(sessionId, displayTitle, value);
+          return;
+        }
+        let task = acceptPreviewProgress(await rpc                 ('sessionResetModelPreviewStartWithGoal', { request: { sessionId, continuationGoal: '' } }), sessionId);
+        finish({ task });
+        while (task.running) {
+          await delay(800);
+          task = acceptPreviewProgress(await rpc                 ('sessionResetModelPreviewStatus', { request: { sessionId, taskId: task.taskId } }), sessionId, task.taskId);
+          finish({ task });
+        }
+        if (task.error) throw new Error(task.error);
+        const report = acceptModelReport(task.report, sessionId);
+        if (report.status !== 'pass') throw new Error(`评估结果为 ${report.status}，未自动重置；按约定不退回近期采样`);
+        finish({ task: null, phase: 'executing' });
+        const value = await rpc          ('sessionResetExecuteModel', { request: { sessionId, confirmShortId, modelReportId: report.reportId, sourceHash: report.sourceHash, continuationGoal: report.continuation .goal } });
+        if (!isSuccess(value, sessionId) || value.phase !== 'DONE' || value.handoffMode !== 'model' || value.modelReportId !== report.reportId || value.modelSourceHash !== report.sourceHash) throw new Error('未收到模型候选重置的读回校验，不能判定完成');
+        finish({ phase: 'done', done: value });
+        saveReceipt(sessionId, displayTitle, value);
+      } catch (reason) {
+        finish({ phase: 'failed', error: errorMessage(reason) });
+      }
+    }
+
     function ResetDialog({ sessionId, displayTitle, onClose, completed, recoveryOnly }             ) {
       const [dry, setDry] = React.useState               (null);
       const [loading, setLoading] = React.useState(true);
@@ -68,6 +140,10 @@ window.__ModuleLoader__.load({
       const recoveryReady = !!recovery && !recovery.operations.length && !recovery.issues.length;
       React.useEffect(() => () => { modelRequest.current?.abort(); topicRequest.current?.abort(); }, []);
       const shortId = sessionId.slice(8, 16);
+      const autoList = React.useSyncExternalStore(subscribeAuto, autoSnapshot, autoSnapshot);
+      const autoRun = autoList.find((run) => run.sessionId === sessionId) ?? null;
+      const autoBusy = autoRun !== null && (autoRun.phase === 'evaluating' || autoRun.phase === 'executing');
+      const shown                = result ?? (autoRun?.phase === 'done' && autoRun.done ? autoRun.done : null);
       const close = () => { if (!executing && !recovering) onClose(); };
       const useGoal = (value        , topicIds           = []) => { setContinuationGoal(value); setSelectedTopics(topicIds); setModel(null); setSelectedModel(null); setModelTask(null); setConfirmText(''); };
       const acceptTopics = (value               , taskId         ) => {
@@ -97,7 +173,7 @@ window.__ModuleLoader__.load({
         finally { if (!controller.signal.aborted) setTopicLoading(false); }
       };
       const chooseTopic = async (topicId        , checked         ) => {
-        if (!topicTask || topicLoading || modelLoading || executing || recovering) return;
+        if (!topicTask || topicLoading || modelLoading || executing || recovering || autoBusy) return;
         const controller = new AbortController(); topicRequest.current = controller;
         setTopicLoading(true); setTopicError(null);
         try {
@@ -155,7 +231,7 @@ window.__ModuleLoader__.load({
         return () => controller.abort();
       }, [sessionId, recoveryAttempt]);
       const recover = async (operationId        ) => {
-        if (executing || recovering || modelLoading || topicLoading || confirmText.trim() !== shortId) return;
+        if (executing || recovering || modelLoading || topicLoading || autoBusy || confirmText.trim() !== shortId) return;
         setRecovering(true);
         setRecoveryError(null);
         try {
@@ -180,29 +256,17 @@ window.__ModuleLoader__.load({
         setModelError(null);
         setModelTask(null);
         try {
-          let task = await rpc                 ('sessionResetModelPreviewStartWithGoal', { request: { sessionId, continuationGoal } }, controller.signal);
-          const taskId = task?.taskId;
-          const acceptTask = (value                 ) => {
-            const p = value?.progress;
-            if (value?.sessionId !== sessionId || value.taskId !== taskId || !/^[a-f0-9-]{36}$/i.test(taskId ?? '') || typeof value.running !== 'boolean' || !Number.isFinite(Date.parse(value.startedAt)) || !p || !Object.hasOwn(previewPhases, p.phase) || !(['completedBatches', 'totalBatches', 'running', 'concurrency', 'requestCount', 'requestLimit', 'assessed', 'sourceTotal']         ).every((key) => Number.isSafeInteger(p[key]) && p[key] >= 0) || p.completedBatches > p.totalBatches || p.running > p.concurrency || p.concurrency < 1 || p.concurrency > 4 || p.requestCount > p.requestLimit || p.assessed > p.sourceTotal) throw new Error('评估进度不完整或不属于所选任务');
-            if (!controller.signal.aborted) setModelTask(value);
-          };
+          let task = acceptPreviewProgress(await rpc                 ('sessionResetModelPreviewStartWithGoal', { request: { sessionId, continuationGoal } }, controller.signal), sessionId);
+          const acceptTask = (value                 ) => { acceptPreviewProgress(value, sessionId, task.taskId); if (!controller.signal.aborted) setModelTask(value); };
           acceptTask(task);
           while (task.running) {
             await new Promise((resolve) => setTimeout(resolve, 800));
             if (controller.signal.aborted) return;
-            task = await rpc                 ('sessionResetModelPreviewStatus', { request: { sessionId, taskId } }, controller.signal);
+            task = await rpc                 ('sessionResetModelPreviewStatus', { request: { sessionId, taskId: task.taskId } }, controller.signal);
             acceptTask(task);
           }
           if (task.error) throw new Error(task.error);
-          const value = task.report;
-          if (!value) throw new Error('评估已结束但未收到完整报告，请重新预览');
-          if (value?.sessionId !== sessionId || typeof value.reportId !== 'string' || !/^[a-f0-9-]{36}$/i.test(value.reportId) || !/^[a-f0-9]{64}$/.test(value.sourceHash) || value.mode !== 'shadow' || value.applied !== false || !['pass', 'fail', 'pending', 'unavailable'].includes(value.status) || !Array.isArray(value.selected) || !Array.isArray(value.checks) || !Number.isSafeInteger(value.coverage?.assessed) || !Number.isSafeInteger(value.coverage?.total) || value.coverage.assessed < 0 || value.coverage.total < value.coverage.assessed) throw new Error('模型预览数据不完整或不属于所选会话');
-          if (!value.selected.every((item) => typeof item?.text === 'string' && typeof item.id === 'string' && Number.isSafeInteger(item.seq)) || !value.checks.every((check) => ['constraints', 'state', 'faithful'].includes(check?.key) && Number.isFinite(check.probability) && check.probability >= 0 && check.probability <= 1 && ['pass', 'fail', 'pending'].includes(check.outcome))) throw new Error('模型预览的原文或核对项无效');
-          const context = value.continuation;
-          if (!context || context.scopeOnly !== true || typeof context.goal !== 'string' || !/^[a-f0-9]{64}$/.test(context.hash) || !Array.isArray(context.entries) || !context.entries.every((entry) => typeof entry.candidate?.id === 'string' && typeof entry.candidate.text === 'string' && Number.isSafeInteger(entry.candidate.seq) && Array.isArray(entry.kinds) && entry.kinds.every((kind) => ['task', 'constraint', 'change'].includes(kind)))) throw new Error('缺少可校验的续接目标或全局任务清单');
-          if (value.status === 'pass' && (!context.coverage.complete || !context.resolutionComplete || context.uncertain || context.overflow)) throw new Error('全局任务清单未完整核对，不能显示通过');
-          if (value.status === 'pass' && (value.auditComplete !== true || !value.coverage.complete || value.budgetOmissions && value.budgetOmissions > 0 || !value.selected.length || new Set(value.checks.map((check) => check.key)).size !== 3 || !value.checks.every((check) => check.outcome === 'pass' && check.probability >= 0.7))) throw new Error('未收到完整的模型核对，不能显示通过');
+          const value = acceptModelReport(task.report, sessionId);
           if (!controller.signal.aborted) setModel(value);
         } catch (reason) {
           if (!controller.signal.aborted) setModelError(errorMessage(reason));
@@ -212,7 +276,7 @@ window.__ModuleLoader__.load({
       };
 
       const execute = async () => {
-        if (!dry || dry.canReset === false || !recoveryReady || loading || executing || modelLoading || topicLoading || recovering || confirmText.trim() !== shortId) return;
+        if (!dry || dry.canReset === false || !recoveryReady || loading || executing || modelLoading || topicLoading || recovering || autoBusy || confirmText.trim() !== shortId) return;
         setExecuting(true);
         setError(null);
         try {
@@ -226,8 +290,7 @@ window.__ModuleLoader__.load({
           setResult(value);
           setDry(null);
           try {
-            const { ok, phase, verified, sameId, sessionId: id, before, after, forkId, operationId, auditWarning, handoffMode, modelReportId, modelSourceHash, memory } = value;
-            window.sessionStorage.setItem(completedKey, JSON.stringify({ sessionId: id, displayTitle, completed: { ok, phase, verified, sameId, sessionId: id, before, after, forkId, operationId, auditWarning, handoffMode, modelReportId, modelSourceHash, memory } }));
+            saveReceipt(sessionId, displayTitle, value);
             window.location.reload();
           } catch { setError('后端重置已校验完成，请刷新当前标签页以清除旧统计。'); }
         } catch (reason) {
@@ -245,9 +308,9 @@ window.__ModuleLoader__.load({
         closeLabel: '关闭',
         footer: h(React.Fragment, null,
           h(Button, { variant: 'outline', disabled: executing || recovering, onClick: close }, '关闭'),
-          !result && !recoveryOnly && h(Button, {
+          !shown && !recoveryOnly && h(Button, {
             variant: 'primary',
-            disabled: !dry || dry.canReset === false || !recoveryReady || loading || executing || modelLoading || topicLoading || recovering || confirmText.trim() !== shortId,
+            disabled: !dry || dry.canReset === false || !recoveryReady || loading || executing || modelLoading || topicLoading || recovering || autoBusy || confirmText.trim() !== shortId,
             onClick: execute,
           }, executing ? (selectedModel ? '正在应用候选…' : '正在备份…') : selectedModel ? '应用候选并重置' : '备份并重置'),
         ),
@@ -257,7 +320,7 @@ window.__ModuleLoader__.load({
           h('code', { style: { fontSize: 12, overflowWrap: 'anywhere' } }, sessionId),
           loading && h('p', { role: 'status' }, '正在读取该会话的预览…'),
           error && h('p', { role: 'alert' }, error),
-          !result && !recoveryOnly && !loading && !dry && h(Button, { variant: 'outline', onClick: () => setAttempt((n) => n + 1) }, '重新读取预览'),
+          !shown && !recoveryOnly && !loading && !dry && h(Button, { variant: 'outline', onClick: () => setAttempt((n) => n + 1) }, '重新读取预览'),
           dry && h('div', { 'data-inplace-reset-stats': true, style: { margin: '16px 0' } },
             h('div', null, `原日志轮次：${Number.isSafeInteger(dry.totalTurns) ? dry.totalTurns.toLocaleString() : '未提供'}`),
             h('div', null, `事件数：${dry.totalEvents.toLocaleString()}`),
@@ -266,7 +329,26 @@ window.__ModuleLoader__.load({
             h('div', null, selectedModel ? `已选模型候选 ${selectedModel.selected.length} 个片段；新日志收敛为 1 轮交接记录` : `交接包最多采样 ${dry.k} 轮；新日志收敛为 1 轮交接记录`),
             dry.canReset === false && h('p', { role: 'alert' }, `当前不可重置：${dry.blockedReason}`),
           ),
-          !result && !recoveryOnly && dry && h('section', { 'data-inplace-reset-preset': true, style: { margin: '16px 0' } },
+          !shown && !recoveryOnly && dry && h('section', { 'data-inplace-reset-auto': true, style: { margin: '16px 0', padding: 12, border: '1px solid var(--dsw-alias-border-l3)', borderRadius: 8 } },
+            h('b', null, '一键自动重置'),
+            h('p', { style: { fontSize: 12, margin: '6px 0' } }, '点击后自动执行并转入后台；可关闭本弹窗或查看其他会话，右下角浮标显示进度与结果。两种模式都跳过短ID输入，绑定当前所示会话。'),
+            h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
+              h(Button, { variant: 'outline', 'data-inplace-reset-auto-evaluate': true, disabled: !recoveryReady || loading || executing || recovering || modelLoading || topicLoading || autoBusy || dry.canReset === false, onClick: () => { void startAutoReset(sessionId, displayTitle, 'evaluate', agentPreset); } }, '按评估重置'),
+              h(Button, { variant: 'outline', 'data-inplace-reset-auto-full': true, disabled: !recoveryReady || loading || executing || recovering || modelLoading || topicLoading || autoBusy || dry.canReset === false, onClick: () => { void startAutoReset(sessionId, displayTitle, 'full', agentPreset); } }, '全套全选重置'),
+            ),
+            h('p', { style: { fontSize: 12, marginBottom: 0 } }, '按评估：模型筛选并核对，全部通过才自动应用候选并重置；未通过即停止，不退回近期采样，会产生模型调用。全套全选：不调用模型，最大 32 轮全量采样直接备份并重置。'),
+          ),
+          autoRun && h('div', { 'data-inplace-reset-auto-run': `${autoRun.mode}:${autoRun.phase}`, role: 'status', 'aria-live': 'polite', style: { margin: '12px 0', padding: 12, border: '1px solid var(--dsw-alias-border-l3)', borderRadius: 8 } },
+            h('b', { style: { animation: autoBusy ? 'inplaceResetPulse 1.6s ease-in-out infinite' : undefined } }, `${({ evaluate: '按评估重置', full: '全套全选重置' }         )[autoRun.mode]} · ${({ evaluating: '模型评估中', executing: '备份与重建中', done: '已完成并校验', failed: '未完成' }         )[autoRun.phase]}`),
+            autoRun.phase === 'evaluating' && (autoRun.task ? h(React.Fragment, null,
+              h('p', { style: { fontSize: 12, margin: '6px 0 4px' } }, `${previewPhases[autoRun.task.progress.phase]} · ${autoRun.task.progress.completedBatches} / ${autoRun.task.progress.totalBatches} 批 · 并行 ${autoRun.task.progress.running} / ${autoRun.task.progress.concurrency}`),
+              h('progress', { 'aria-label': '自动评估批次进度', max: Math.max(1, autoRun.task.progress.totalBatches), value: autoRun.task.progress.totalBatches ? autoRun.task.progress.completedBatches : undefined, style: { width: '100%', height: 8 } }),
+            ) : h('p', { style: { fontSize: 12, margin: '6px 0 0' } }, '正在准备材料并拆分批次…')),
+            autoRun.phase === 'executing' && h('div', { style: { height: 6, borderRadius: 3, background: 'var(--dsw-alias-border-l3)', overflow: 'hidden', marginTop: 8, position: 'relative' } }, h('span', { style: { position: 'absolute', top: 0, bottom: 0, left: 0, width: '40%', borderRadius: 3, background: 'var(--dsw-alias-label-primary, currentColor)', animation: 'inplaceResetSlide 1.1s ease-in-out infinite' } })),
+            autoRun.phase === 'failed' && h('p', { role: 'alert', style: { marginBottom: 0 } }, `自动重置未完成：${autoRun.error}`),
+            autoBusy && h('p', { style: { fontSize: 12, marginBottom: 0 } }, '已在后台运行；完成或失败都会在这里和右下角浮标显示。'),
+          ),
+          !shown && !recoveryOnly && dry && h('section', { 'data-inplace-reset-preset': true, style: { margin: '16px 0' } },
             h('label', { htmlFor: 'inplace-reset-agent-preset' }, '重生后的 Agent 预设'),
             h('select', { id: 'inplace-reset-agent-preset', value: agentPreset, disabled: executing || recovering || modelLoading || !presets, onChange: (event                                           ) => { setAgentPreset(event.target.value); setConfirmText(''); }, style: { display: 'block', width: '100%', marginTop: 6, padding: 8, color: 'inherit', background: 'var(--dsw-alias-bg-base)', border: '1px solid var(--dsw-alias-border-l3)', borderRadius: 6 } },
               h('option', { value: '' }, `沿用原预设${dry.agentPreset ? `（${presets?.find((row) => row.id === dry.agentPreset)?.name ?? dry.agentPreset}）` : '（原会话未指定，使用宿主默认）'}`),
@@ -287,11 +369,11 @@ window.__ModuleLoader__.load({
               h(Button, { variant: 'outline', disabled: executing || recovering || modelLoading || topicLoading || recovery.operations.length !== 1 || confirmText.trim() !== shortId, onClick: () => recover(operation.operationId) }, recovering ? '正在恢复…' : '恢复原日志'),
             )),
           ),
-          !result && dry && h('div', { 'data-inplace-reset-model': true, style: { margin: '16px 0' } },
+          !shown && dry && h('div', { 'data-inplace-reset-model': true, style: { margin: '16px 0' } },
             h('section', { 'data-inplace-reset-topics': true, style: { marginBottom: 16, padding: 12, border: '1px solid var(--dsw-alias-border-l3)', borderRadius: 8 } },
               h('b', null, '候选续接主题'),
               (topicTask?.model ?? dry.topicModel?.selection) && h('p', { 'data-inplace-reset-topic-model': true, style: { fontSize: 12, overflowWrap: 'anywhere' } }, `主题分析模型：${modelLabel(topicTask?.model ?? dry.topicModel .selection)}${(topicTask?.modelSource ?? dry.topicModel?.source) === 'default' ? '（会话沿用宿主默认）' : '（本会话已选模型）'}`),
-              h(Button, { variant: 'outline', disabled: loading || executing || recovering || modelLoading || topicLoading, onClick: previewTopics }, topicLoading ? '正在分析主题…' : topicTask?.report ? '检查并更新候选主题' : '使用本会话模型分析主题'),
+              h(Button, { variant: 'outline', disabled: loading || executing || recovering || modelLoading || topicLoading || autoBusy, onClick: previewTopics }, topicLoading ? '正在分析主题…' : topicTask?.report ? '检查并更新候选主题' : '使用本会话模型分析主题'),
               h('p', { style: { fontSize: 12 } }, '先由当前会话模型提出带原文引用的主题，选择后填写下方目标；只做分析，不运行历史命令。'),
               topicLoading && topicTask && h('div', { 'data-inplace-reset-topic-progress': topicTask.progress.phase, role: 'status', 'aria-live': 'polite' },
                 h('p', null, `${topicPhases[topicTask.progress.phase]} · ${topicTask.progress.completedBatches} / ${topicTask.progress.totalBatches} 批 · 并行 ${topicTask.progress.running} / ${topicTask.progress.concurrency}`),
@@ -301,7 +383,7 @@ window.__ModuleLoader__.load({
               topicTask?.report && h('div', { 'data-inplace-reset-topic-result': topicTask.report.status },
                 topicTask.report.status === 'unavailable' && h('p', { role: 'alert' }, `主题分析未成功，暂无可选主题。${topicTask.report.note}`),
                 topicTask.report.status === 'ready' && !topicTask.report.topics.length && h('p', { role: 'status' }, '本次未识别到有依据的主题，可直接填写续接目标。'),
-                topicTask.report.topics.length > 0 && h('fieldset', { ref: topicOptions, 'data-inplace-reset-topic-options': true, disabled: topicLoading || modelLoading || executing || recovering, style: { margin: '12px 0', padding: 8, border: '1px solid var(--dsw-alias-border-l3)', borderRadius: 6 } },
+                topicTask.report.topics.length > 0 && h('fieldset', { ref: topicOptions, 'data-inplace-reset-topic-options': true, disabled: topicLoading || modelLoading || executing || recovering || autoBusy, style: { margin: '12px 0', padding: 8, border: '1px solid var(--dsw-alias-border-l3)', borderRadius: 6 } },
                   h('legend', { 'data-inplace-reset-topic-count': topicTask.report.topics.length }, `已生成 ${topicTask.report.topics.length} 个候选主题，可多选`),
                   topicTask.report.topics.map((topic, index) => h('label', { key: topic.id, 'data-inplace-reset-topic-option': topic.id, style: { display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 4px', cursor: 'pointer', overflowWrap: 'anywhere' } },
                     h('input', { type: 'checkbox', value: topic.id, checked: selectedTopics.includes(topic.id), onChange: (event                                          ) => chooseTopic(topic.id, event.target.checked), style: { marginTop: 4, flexShrink: 0 } }),
@@ -321,7 +403,7 @@ window.__ModuleLoader__.load({
             h('label', { htmlFor: 'inplace-reset-continuation-goal' }, '续接目标'),
             h('textarea', { id: 'inplace-reset-continuation-goal', value: continuationGoal, maxLength: 2000, rows: selectedTopics.length > 1 ? 6 : 2, placeholder: '留空：接续全部未完成任务，保留持续约束与有效纠正', disabled: executing || recovering || modelLoading || topicLoading, onChange: (event                                             ) => useGoal(event.target.value), style: { display: 'block', width: '100%', boxSizing: 'border-box', marginTop: 6, padding: 8, color: 'inherit', background: 'var(--dsw-alias-bg-base)', border: '1px solid var(--dsw-alias-border-l3)', borderRadius: 6 } }),
             h('p', { style: { fontSize: 12 } }, '此目标决定模型筛选范围；其他主题的未完成任务和持续约束也会保留。修改目标后需重新预览，筛选目标不增加操作授权。'),
-            h(Button, { variant: 'outline', disabled: loading || executing || recovering || modelLoading || topicLoading, onClick: previewModel }, modelLoading ? '正在筛选并核对…' : '模型筛选预览'),
+            h(Button, { variant: 'outline', disabled: loading || executing || recovering || modelLoading || topicLoading || autoBusy, onClick: previewModel }, modelLoading ? '正在筛选并核对…' : '模型筛选预览'),
             h('p', { style: { fontSize: 12 } }, '预览先不修改会话。通过检查后可明确选用这份候选；未选择时使用近期采样。'),
             h('p', { style: { fontSize: 12 } }, '先梳理全局清单再并行筛选，最多64批、192次请求；每阶段最多4个请求并行，完成即停止。'),
             modelLoading && !modelTask && h('p', { role: 'status' }, '正在准备材料并拆分批次…'),
@@ -359,8 +441,8 @@ window.__ModuleLoader__.load({
               h('ul', null, model.checks.map((check) => h('li', { key: check.key }, `${checkLabels[check.key] ?? check.key}：${({ pass: '通过', fail: '未通过', pending: '待核验' })[check.outcome]}（${model.batchCount && model.batchCount > 1 ? '最低批次P' : 'P'}=${Number(check.probability).toFixed(2)}）`))),
               model.strategy === 'conservative' && h('p', null, '本候选保守保留了全部送评原文，已重新核对；未改写原来的必要程度评分。'),
               h('p', { style: { fontSize: 12 } }, model.note),
-              h(Button, { variant: 'outline', 'data-inplace-reset-use-model': true, 'aria-pressed': selectedModel?.reportId === model.reportId, disabled: model.status !== 'pass' || loading || executing || recovering || modelLoading || dry.canReset === false, onClick: () => setSelectedModel(model) }, selectedModel?.reportId === model.reportId ? '已选用此候选' : '本次使用模型候选'),
-              selectedModel && h(Button, { variant: 'ghost', disabled: executing || recovering, onClick: () => setSelectedModel(null) }, '改用近期采样'),
+              h(Button, { variant: 'outline', 'data-inplace-reset-use-model': true, 'aria-pressed': selectedModel?.reportId === model.reportId, disabled: model.status !== 'pass' || loading || executing || recovering || modelLoading || autoBusy || dry.canReset === false, onClick: () => setSelectedModel(model) }, selectedModel?.reportId === model.reportId ? '已选用此候选' : '本次使用模型候选'),
+              selectedModel && h(Button, { variant: 'ghost', disabled: executing || recovering || autoBusy, onClick: () => setSelectedModel(null) }, '改用近期采样'),
               selectedModel && h('p', { role: 'status', 'data-inplace-reset-selected-model': selectedModel.reportId }, '本次重置将保存这份候选。请先查看原文及来源，再输入短ID确认。执行前会重新核对会话和评估配置。'),
               h('details', null,
                 h('summary', null, '查看保留原文及来源'),
@@ -371,7 +453,7 @@ window.__ModuleLoader__.load({
               ),
             ),
           ),
-          (!result || !!recovery?.operations.length) && h(React.Fragment, null,
+          (!shown || !!recovery?.operations.length) && h(React.Fragment, null,
             h('p', null, recoveryOnly ? '恢复会先保留原位的新内容，再按摘要校验原日志。' : '重置前会验证完整历史备份。正在运行或无法安全释放的会话会拒绝操作。'),
             h('label', { htmlFor: 'inplace-reset-confirm' }, `输入 ${shortId} 确认所选会话`),
             h('input', {
@@ -383,19 +465,20 @@ window.__ModuleLoader__.load({
               style: { display: 'block', width: '100%', boxSizing: 'border-box', marginTop: 6, padding: 8, color: 'inherit', background: 'var(--dsw-alias-bg-base)', border: '1px solid var(--dsw-alias-border-l3)', borderRadius: 6 },
             }),
           ),
-          result && h('div', { role: result.phase === 'NOT_RESET' ? 'alert' : 'status', 'data-inplace-reset-result': result.phase },
-            h('b', null, result.phase === 'DONE' ? '重置已完成并校验' : result.phase === 'RECOVERED' ? '原日志已恢复并校验' : '未重置'),
-            result.phase === 'DONE' && h('p', { 'data-inplace-reset-after': true }, `原日志轮次：${result.before.totalTurns} → ${result.after.totalTurns}；事件数：${result.before.totalEvents} → ${result.after.totalEvents}`),
-            result.phase === 'DONE' && result.memory && Array.isArray(result.memory.warnings) && ['heapUsed', 'rss'].every((key) => Number.isFinite(result.memory?.before?.[key                            ]) && Number.isFinite(result.memory?.after?.[key                            ])) && h('div', { 'data-inplace-reset-memory': true },
-              h('p', null, `同进程内存观测：堆 ${(result.memory.before.heapUsed / 1048576).toFixed(1)} → ${(result.memory.after.heapUsed / 1048576).toFixed(1)} MB；RSS ${(result.memory.before.rss / 1048576).toFixed(1)} → ${(result.memory.after.rss / 1048576).toFixed(1)} MB`),
-              h('small', null, `已清理 ${result.memory.queryEntries + result.memory.persistenceEntries} 项读取缓存；${result.memory.gcCompleted ? '已请求运行时回收' : '等待自然回收'}。其他会话活动会影响进程总量。`),
-              result.memory.warnings.map((warning, index) => h('p', { key: index, role: 'status' }, warning)),
+          shown && h('div', { role: shown.phase === 'NOT_RESET' ? 'alert' : 'status', 'data-inplace-reset-result': shown.phase },
+            h('b', null, shown.phase === 'DONE' ? '重置已完成并校验' : shown.phase === 'RECOVERED' ? '原日志已恢复并校验' : '未重置'),
+            shown.phase === 'DONE' && h('p', { 'data-inplace-reset-after': true }, `原日志轮次：${shown.before.totalTurns} → ${shown.after.totalTurns}；事件数：${shown.before.totalEvents} → ${shown.after.totalEvents}`),
+            shown.phase === 'DONE' && shown.memory && Array.isArray(shown.memory.warnings) && ['heapUsed', 'rss'].every((key) => Number.isFinite(shown.memory?.before?.[key                            ]) && Number.isFinite(shown.memory?.after?.[key                            ])) && h('div', { 'data-inplace-reset-memory': true },
+              h('p', null, `同进程内存观测：堆 ${(shown.memory.before.heapUsed / 1048576).toFixed(1)} → ${(shown.memory.after.heapUsed / 1048576).toFixed(1)} MB；RSS ${(shown.memory.before.rss / 1048576).toFixed(1)} → ${(shown.memory.after.rss / 1048576).toFixed(1)} MB`),
+              h('small', null, `已清理 ${shown.memory.queryEntries + shown.memory.persistenceEntries} 项读取缓存；${shown.memory.gcCompleted ? '已请求运行时回收' : '等待自然回收'}。其他会话活动会影响进程总量。`),
+              shown.memory.warnings.map((warning, index) => h('p', { key: index, role: 'status' }, warning)),
             ),
-            result.phase === 'NOT_RESET' && h('p', null, result.note),
-            result.phase !== 'NOT_RESET' && result.auditWarning && h('p', { role: 'alert' }, result.auditWarning),
-            result.phase === 'DONE' && result.handoffMode === 'model' && h('p', { 'data-inplace-reset-applied-model': result.modelReportId }, `交接来源：模型候选 ${result.modelReportId}`),
-            result.phase === 'DONE' && result.after.agentPreset && h('p', { 'data-inplace-reset-after-preset': result.after.agentPreset }, `重生后的 Agent 预设：${result.after.agentPreset}`),
-            result.phase === 'DONE' && result.forkId && h('p', { style: { overflowWrap: 'anywhere' } }, `历史备份：${result.forkId}`),
+            shown.phase === 'NOT_RESET' && h('p', null, shown.note),
+            shown.phase !== 'NOT_RESET' && shown.auditWarning && h('p', { role: 'alert' }, shown.auditWarning),
+            shown.phase === 'DONE' && shown.handoffMode === 'model' && h('p', { 'data-inplace-reset-applied-model': shown.modelReportId }, `交接来源：模型候选 ${shown.modelReportId}`),
+            shown.phase === 'DONE' && shown.after.agentPreset && h('p', { 'data-inplace-reset-after-preset': shown.after.agentPreset }, `重生后的 Agent 预设：${shown.after.agentPreset}`),
+            shown.phase === 'DONE' && shown.forkId && h('p', { style: { overflowWrap: 'anywhere' } }, `历史备份：${shown.forkId}`),
+            shown.phase === 'DONE' && shown.backupTrimmedToSeq !== undefined && h('p', { 'data-inplace-reset-backup-trimmed': shown.backupTrimmedToSeq }, `备份快照裁剪至事件 ${shown.backupTrimmedToSeq}（源日志超出fork体积上限）；完整原件在隔离区按字节保留。`),
           ),
         ),
       );
@@ -521,11 +604,44 @@ window.__ModuleLoader__.load({
           }, '原地重置…');
         }
 
+        // 自动模式的动效 keyframes 只注入一次；无 DOM 环境下静默跳过。
+        ctx.effect(() => {
+          if (typeof document === 'undefined' || document.getElementById('inplace-reset-auto-style')) return undefined;
+          const style = document.createElement('style');
+          style.id = 'inplace-reset-auto-style';
+          style.textContent = '@keyframes inplaceResetSlide{0%{transform:translateX(-110%)}100%{transform:translateX(285%)}}@keyframes inplaceResetPulse{0%,100%{opacity:1}50%{opacity:.5}}';
+          document.head.append(style);
+          return () => style.remove();
+        }, 'session-reset: auto-run motion styles');
+
+        function AutoChipList() {
+          const runs = React.useSyncExternalStore(subscribeAuto, autoSnapshot, autoSnapshot);
+          return h('div', { 'data-inplace-reset-auto-chips': true, style: { position: 'fixed', right: 16, bottom: 16, zIndex: 1200, display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 320 } },
+            runs.map((run) => h('div', { key: run.sessionId, 'data-inplace-reset-auto-chip': `${run.mode}:${run.phase}`, role: 'status', style: { padding: '10px 12px', borderRadius: 8, border: '1px solid var(--dsw-alias-border-l3)', background: 'var(--dsw-alias-bg-base)', boxShadow: '0 4px 16px rgba(0,0,0,0.18)' } },
+              h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 } },
+                h('b', { style: { fontSize: 12, animation: run.phase === 'evaluating' || run.phase === 'executing' ? 'inplaceResetPulse 1.6s ease-in-out infinite' : undefined } }, `${({ evaluate: '按评估重置', full: '全套全选重置' }         )[run.mode]} · ${({ evaluating: '评估中', executing: '重置中', done: '已完成', failed: '未完成' }         )[run.phase]}`),
+                (run.phase === 'done' || run.phase === 'failed') && h('button', { type: 'button', 'aria-label': '移除自动重置状态', onClick: () => { autoRuns.delete(run.sessionId); notifyAuto(); }, style: { border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer', padding: '0 2px', lineHeight: 1 } }, '×'),
+              ),
+              h('div', { style: { fontSize: 11, opacity: 0.8, overflowWrap: 'anywhere' } }, run.displayTitle || run.sessionId),
+              run.phase === 'evaluating' && h('div', { style: { fontSize: 11, marginTop: 4 } }, run.task ? `${previewPhases[run.task.progress.phase]} · ${run.task.progress.completedBatches} / ${run.task.progress.totalBatches} 批` : '正在准备材料…'),
+              run.phase === 'executing' && h('div', { style: { height: 5, borderRadius: 3, background: 'var(--dsw-alias-border-l3)', overflow: 'hidden', marginTop: 6, position: 'relative' } }, h('span', { style: { position: 'absolute', top: 0, bottom: 0, left: 0, width: '40%', borderRadius: 3, background: 'var(--dsw-alias-label-primary, currentColor)', animation: 'inplaceResetSlide 1.1s ease-in-out infinite' } })),
+              run.phase === 'done' && h('button', { type: 'button', 'data-inplace-reset-auto-receipt': true, onClick: () => publish({ sessionId: run.sessionId, displayTitle: run.displayTitle, completed: run.done  }) }, '查看回执'),
+              run.phase === 'failed' && h('button', { type: 'button', 'data-inplace-reset-auto-retry': true, onClick: () => publish({ sessionId: run.sessionId, displayTitle: run.displayTitle }) }, '查看会话'),
+            )),
+          );
+        }
+
         function ResetOverlay() {
           const request = React.useSyncExternalStore(subscribe, snapshot, snapshot);
-          if (!request) return null;
-          if ('kind' in request) return h(RecoveryList, { onChoose: (id) => publish({ sessionId: id, displayTitle: `中断重置 · ${id.slice(8, 16)}`, recoveryOnly: true }), onClose: () => publish(null) });
-          return h(ResetDialog, { ...request, key: request.recoveryOnly ? `${request.sessionId}/recovery` : request.sessionId, onClose: () => publish(null) });
+          const runs = React.useSyncExternalStore(subscribeAuto, autoSnapshot, autoSnapshot);
+          const chips = runs.length ? h(AutoChipList) : null;
+          if (!request) return chips;
+          if ('kind' in request) {
+            const list = h(RecoveryList, { onChoose: (id) => publish({ sessionId: id, displayTitle: `中断重置 · ${id.slice(8, 16)}`, recoveryOnly: true }), onClose: () => publish(null) });
+            return chips ? h(React.Fragment, null, list, chips) : list;
+          }
+          const dialog = h(ResetDialog, { ...request, key: request.recoveryOnly ? `${request.sessionId}/recovery` : request.sessionId, onClose: () => publish(null) });
+          return chips ? h(React.Fragment, null, dialog, chips) : dialog;
         }
 
         ctx.effect(() => ctx.slots.inject('sidebar.workspaces.session.menu.item', () => ctx.slots.register({
