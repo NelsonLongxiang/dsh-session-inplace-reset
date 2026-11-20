@@ -23,7 +23,7 @@ function fixture(status = 'idle') {
   const owner = async () => { await dispose(); calls.push('owner released'); const index = owners.indexOf(owner); if (index >= 0) owners.splice(index, 1); };
   owner[symbols.effect] = { label: 'agentLoop.lifecycle(target)' };
   owners.push(owner);
-  const controller = { ctx: { fiber: ownerFiber }, agents: { resolveAgent: (id) => agents.get(id) }, prompt: ({ sessionId }) => calls.push(`prompt:${sessionId}`), create: () => {} };
+  const controller = { ctx: { fiber: ownerFiber }, agents: { resolveAgent: (id) => agents.get(id), resolveObservedAgent: (observation) => agents.get(observation?.header?.id) }, prompt: ({ sessionId }) => calls.push(`prompt:${sessionId}`), create: () => {} };
   const services = { agents: { get: (id) => agents.get(id) }, sessions: { get: (id) => sessions.get(id) }, agentLoop: loop, sessionController: controller };
   const lifecycle = createSessionLifecycle({ get: (key) => services[key] }, symbols);
   return { lifecycle, agents, sessions, other, loop, calls, controller, effects, owners };
@@ -121,4 +121,25 @@ test('same-session concurrent writes are fenced while another session remains us
   f.lifecycle.dispose();
   assert.ok(f.calls.includes('prompt:other'));
   assert.ok(f.calls.includes('prompt:target'));
+});
+
+test('resolver guards report lock failures as contract result values, not sync throws', async () => {
+  const f = fixture();
+  const entered = Promise.withResolvers();
+  const finish = Promise.withResolvers();
+  const job = f.lifecycle.run('target', async () => { entered.resolve(); await finish.promise; });
+  await entered.promise;
+  // 定时器上下文（a2a reconcile 的 materialize，dsh-open-a2a-net#756）接不到同步异常；
+  // resolver 失败必须走宿主契约的结果值形状，否则同步 throw 会击穿 timer 崩掉宿主。
+  const refused = f.controller.agents.resolveAgent('target');
+  assert.ok(refused instanceof Promise, 'locked resolveAgent must still return a promise');
+  assert.deepEqual(await refused, { error: { message: '该会话正在重置，请稍后重试' } });
+  const refusedObserved = f.controller.agents.resolveObservedAgent({ header: { id: 'target' } });
+  assert.deepEqual(await refusedObserved, { error: { message: '该会话正在重置，请稍后重试' } });
+  // 用户动作路径仍同步抛出，RPC 层照常转为请求拒绝。
+  assert.throws(() => f.controller.prompt({ sessionId: 'target' }), /正在重置/);
+  assert.equal(f.controller.agents.resolveAgent('other'), f.other, 'other sessions resolve untouched');
+  finish.resolve();
+  await job;
+  f.lifecycle.dispose();
 });
