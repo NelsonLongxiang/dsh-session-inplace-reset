@@ -11,7 +11,7 @@ function fixture(status = 'idle') {
   const owners = [];
   const ownerFiber = { _disposables: owners, getEffects: () => owners.map((dispose) => dispose[symbols.effect]) };
   const loop = { runtime: { ctx: { fiber: { _disposables: effects, getEffects: () => effects.map((effect) => effect[symbols.effect]) } } }, prepare(_ctx, id) { calls.push(id); } };
-  const agent = { status, session: { header: {} }, send() { calls.push('send'); } };
+  const agent = { status, session: { header: {} }, send() { calls.push('send'); }, steer() { calls.push('steer'); }, followup() { calls.push('followup'); }, inject() { calls.push('inject'); } };
   agents.set('target', agent);
   sessions.set('target', agent.session);
   const other = { status: 'idle' };
@@ -139,6 +139,23 @@ test('resolver guards report lock failures as contract result values, not sync t
   // 用户动作路径仍同步抛出，RPC 层照常转为请求拒绝。
   assert.throws(() => f.controller.prompt({ sessionId: 'target' }), /正在重置/);
   assert.equal(f.controller.agents.resolveAgent('other'), f.other, 'other sessions resolve untouched');
+  finish.resolve();
+  await job;
+  f.lifecycle.dispose();
+});
+
+test('delivery guards drop stale sends during the lock instead of throwing', async () => {
+  const f = fixture();
+  const entered = Promise.withResolvers();
+  const finish = Promise.withResolvers();
+  const job = f.lifecycle.run('target', async () => { entered.resolve(); await finish.promise; });
+  await entered.promise;
+  // 即发即弃投递的调用方可能在裸定时器里同步调用（如 a2a armAsyncNudge 的 steerRelay），
+  // 宿主 failLoud 对未处理拒绝同样致命：持锁期间丢弃滞留投递，不 throw 不 reject。
+  const before = f.calls.length;
+  assert.equal(f.agents.get('target').steer({ id: 'm1', role: 'user', content: [], source: { kind: 'a2a-relay' } }), undefined);
+  assert.equal(f.agents.get('target').send({}, 'inbox', false), undefined);
+  assert.equal(f.calls.length, before, 'locked deliveries must not reach the runtime');
   finish.resolve();
   await job;
   f.lifecycle.dispose();
