@@ -6,6 +6,7 @@
 // 迭代至 oracle 逐事件全过；遇非本类失败即停（rc=3），面重放异常即停（rc=4）。
 import { loadDsh } from '../lib/dsh-lib.mjs';
 import { openSession, replaySurface, writeSession } from '../lib/v4-file.mjs';
+import { recordLedger } from '../lib/ledger.mjs';
 
 const m = await loadDsh();
 
@@ -46,4 +47,5 @@ for (;;) {
   console.log(`  -> recomputed span [${ev.data.shadowedSeqs[0]}..${ev.data.shadowedSeqs.at(-1)}] len=${ev.data.shadowedSeqs.length}`);
 }
 writeSession(outFile, rows);
+recordLedger({ tool: 'fix-compaction-span', input: inFile, output: outFile, summary: `${round} compaction span(s) recomputed` });
 console.log(`OK: ${round} compaction span(s) fixed, ${events.length} events -> ${outFile}`);

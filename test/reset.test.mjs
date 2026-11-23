@@ -8,7 +8,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { executeReset, executeRecovery } from '../lib/reset.js';
 import { recoveryStatus, ResetJournal } from '../lib/reset-journal.ts';
 
-function fixture({ failCreate = false, activity = [], wrongPreset = false, bigMessages = 0, reportedBytes } = {}) {
+function fixture({ failCreate = false, failReleaseRuntime = false, activity = [], wrongPreset = false, bigMessages = 0, reportedBytes } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'dsh-reset-isolated-'));
   const id = 'session-11111111-1111-1111-1111-111111111111';
   const forkId = 'session-22222222-2222-2222-2222-222222222222';
@@ -31,7 +31,7 @@ function fixture({ failCreate = false, activity = [], wrongPreset = false, bigMe
       try { return await operation({ release: async () => { released = true; agents.delete(sid); } }); }
       finally { if (sid === id) locked = false; }
     },
-    async releaseCurrent(sid) { agents.delete(sid); },
+    async releaseCurrent(sid) { if (failReleaseRuntime) throw new Error('injected release failure'); agents.delete(sid); },
   };
   let observeCalls = 0;
   let observeCallsAtFork;
@@ -207,6 +207,22 @@ test('a rejected candidate cannot fork or replace storage and never falls back t
   assert.equal(f.forkCalls(), 0);
   assert.deepEqual(readFileSync(f.file(f.id)), f.bytes);
   assert.equal(f.rows.at(-1).state, 'FAILED_UNCHANGED');
+});
+
+test('a committed reset reports releaseWarning without reversing the transaction', async () => {
+  const f = fixture({ failReleaseRuntime: true });
+  const value = await f.run();
+  assert.equal(value.phase, 'DONE');
+  assert.equal(value.verified, true);
+  assert.match(value.releaseWarning, /injected release failure/);
+  assert.match(value.releaseWarning, /请重新打开会话后再续写/);
+  const row = f.rows.find((r) => r.step === 'RELEASE_RUNTIME');
+  assert.equal(row.state, 'WARN');
+  assert.match(row.error, /injected release failure/);
+  // 事务不翻案：重建后的会话仍为 1 轮交接，后续校验可用。
+  assert.equal(value.after.totalTurns, 1);
+  const again = await f.run();
+  assert.equal(again.phase, 'DONE');
 });
 
 test('creation failure preserves the failed generation and restores exact original bytes', async () => {

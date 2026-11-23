@@ -30,6 +30,9 @@ node repair/test/smoke.mjs                               # 合成件自检（不
 | `bin/triage.mjs` | 红字分诊：贴装载/校验错误原文→病种判定＋修法命令＋验证提醒（与病征速查同源） |
 | `guard/watch-member-sessions.mjs` | 冷会话守卫 v3（.223 计划任务每 15 分钟）：fold 体检＋CLEAN 无头自动补头；只碰冷会话，备份 `.guard-<epoch>` |
 | `lib/v4-file.mjs` | 共享件：zstd 多帧遍历、逐行解析、逐行一帧写回、surface 重放 |
+| `lib/ledger.mjs` | 修复台账：每个实际写盘的修理动作追加一行 JSONL 到 `$DSH_REPAIR_LEDGER`（默认 `~/.dsh/session-repair/ledger.jsonl`），字段 at/tool/input/output/bytes/summary/backup；只读 check 不记，追加失败仅告警不影响修复 |
+| `test/smoke.mjs` | 合成件自检（不依赖 DSH_FORMAT_LIB）：各工具 check/fix 全链 + 台账 |
+| `test/onion.mjs` | 七层病种叠层语料回归（区间对/seq 跳号/无头/system 字段/turn 回退/compaction 跨度/孤儿 offload）：防「修好 A 坏 B」，层间不变量逐项断言；L6 需 DSH_FORMAT_LIB，无则显式跳过 |
 
 ## 病征速查（红字 → 工具）
 

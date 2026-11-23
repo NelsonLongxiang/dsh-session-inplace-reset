@@ -6,14 +6,30 @@
 // 输出：每件一行 `短id 判定 [细节]`＋末尾汇总；rc=0 全健康（含合法尾部开放轮），rc=2 有病，rc=1 用法错。
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const BIN = fileURLToPath(new URL('.', import.meta.url));
 
 function sh(tool, ...args) {
-  try { return { rc: 0, out: execFileSync('node', [join(BIN, tool), ...args], { encoding: 'utf8' }) }; }
-  catch (e) { return { rc: e.status ?? 1, out: `${e.stdout || ''}${e.stderr || ''}` }; }
+  return new Promise((resolve) => {
+    const p = spawn('node', [join(BIN, tool), ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    p.stdout.on('data', (c) => { out += c; });
+    p.stderr.on('data', (c) => { out += c; });
+    p.on('error', () => resolve({ rc: 1, out }));
+    p.on('close', (rc) => resolve({ rc: rc ?? 1, out }));
+  });
+}
+
+// 有界并发池：--gates 慢门（oracle+preflight 大文件分钟级）是主要收益面；结果按文件序回填。
+async function pool(items, worker, limit = 6) {
+  const out = new Array(items.length);
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (i < items.length) { const k = i++; out[k] = await worker(items[k]); }
+  }));
+  return out;
 }
 
 // 轮机判定的输出 → 病种归类
@@ -59,22 +75,21 @@ if (!files.length) {
 }
 if (!files.length) { console.error(`sweep: ${root} 下没有 v4 会话文件`); process.exit(1); }
 
-const results = [];
-for (const f of files) {
+const results = await pool(files, async (f) => {
   const id8 = (f.match(/session-([0-9a-f]{8})/)?.[1]) ?? f;
   let r;
-  const turn = sh('fix-turn-rewind.mjs', 'check', f);
+  const turn = await sh('fix-turn-rewind.mjs', 'check', f);
   if (turn.rc === 0 && /OK: /.test(turn.out)) {
     r = { verdict: 'OK', layer: null, detail: turn.out.match(/(\d+) events/)?.[1] + ' events' };
-    const ranges = sh('fix-surface-ranges.mjs', 'check', f);
+    const ranges = await sh('fix-surface-ranges.mjs', 'check', f);
     if (ranges.rc !== 0 || /RANGES: /.test(ranges.out)) r = { verdict: 'SICK', layer: 'nested-ranges', detail: ranges.out.split('\n')[0].slice(0, 140), tool: 'fix-surface-ranges.mjs fix' };
   } else r = classifyTurn(turn.out);
   if (r.verdict !== 'SICK' && gates) {
-    const g = classifyGates(sh('oracle.mjs', f), sh('preflight-v4.mjs', f));
+    const g = classifyGates(await sh('oracle.mjs', f), await sh('preflight-v4.mjs', f));
     if (g) r = g; else if (r.verdict === 'OK') r.detail += '；oracle+preflight PASS';
   }
-  results.push({ file: f, id8, ...r });
-}
+  return { file: f, id8, ...r };
+});
 
 if (json) console.log(JSON.stringify(results, null, 2));
 else {

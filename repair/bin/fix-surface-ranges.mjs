@@ -5,6 +5,7 @@
 // 用法：node bin/fix-surface-ranges.mjs check|fix <in.zstd> [-o out.zstd]
 // 校验：修完跑 oracle.mjs + preflight-v4.mjs。
 import { openSession, writeSession } from '../lib/v4-file.mjs';
+import { recordLedger } from '../lib/ledger.mjs';
 
 function die(msg) { console.error('FIX-ABORT: ' + msg); process.exit(2); }
 
@@ -55,4 +56,5 @@ if (!hits.length) { console.log('nothing to fix'); process.exit(0); }
 const changed = flatten(rows);
 const out = outFlag === '-o' ? outFile : file.replace(/\.zstd$/, '') + '.rangefix.zstd';
 writeSession(out, rows);
+recordLedger({ tool: 'fix-surface-ranges', input: file, output: out, summary: `flattened ${hits.length} pair(s) across ${changed} event(s)` });
 console.log(`flattened ${hits.length} range pair(s) across ${changed} event(s): ${JSON.stringify(hits.map(h => ({ seq: h.seq, type: h.type, range: h.range })))} -> ${out}`);

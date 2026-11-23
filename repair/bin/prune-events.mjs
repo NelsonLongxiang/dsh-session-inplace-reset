@@ -5,6 +5,7 @@
 // 用法：node bin/prune-events.mjs <in.zstd> <out.zstd> <seq> [seq…]
 // 校验：修完跑 oracle.mjs + preflight-v4.mjs；绝不做第二次猜测（启发式选代目标已到语义极限）。
 import { openSession, writeSession } from '../lib/v4-file.mjs';
+import { recordLedger } from '../lib/ledger.mjs';
 
 const [inFile, outFile, ...seqArgs] = process.argv.slice(2);
 if (!inFile || !outFile || !seqArgs.length) {
@@ -49,4 +50,5 @@ for (const ev of evs) {
 }
 for (let k = 0; k < evs.length; k++) if (evs[k].seq !== k) { console.error(`PRUNE-ABORT: 重排后乱序 @${k}`); process.exit(2); }
 writeSession(outFile, [rows[0], ...evs]);
+recordLedger({ tool: 'prune-events', input: inFile, output: outFile, summary: `pruned ${DEL.size} event(s) (${[...DEL].join(',')}), refs shifted ${refs}` });
 console.log(`pruned ${DEL.size} event(s) (${[...DEL].join(',')}), events ${rows.length - 1} -> ${evs.length}, refs shifted ${refs} -> ${outFile}`);

@@ -9,6 +9,7 @@
 // 限制：遇前向跳号/未闭合 turn/open step 会拒修（die），需人工另判。
 import fs from 'node:fs';
 import { openSession, writeSession } from '../lib/v4-file.mjs';
+import { recordLedger } from '../lib/ledger.mjs';
 
 function die(msg) { console.error('FIX-ABORT: ' + msg); process.exit(2); }
 
@@ -61,4 +62,5 @@ const r = walk(rows, true);
 if (!r.fixes.length) { console.log('nothing to fix'); process.exit(0); }
 const out = outFlag === '-o' ? outFile : file.replace(/\.zstd$/, '') + '.turnfix.zstd';
 writeSession(out, rows);
+recordLedger({ tool: 'fix-turn-rewind', input: file, output: out, summary: `rewind ${r.fixes.length} point(s), turns=[${r.turns.join(',')}], lastSeq=${r.lastSeq}` });
 console.log(`fixed ${r.fixes.length} rewind point(s): ${JSON.stringify(r.fixes)} turns=[${r.turns.join(',')}] lastSeq=${r.lastSeq} -> ${out}`);

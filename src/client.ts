@@ -15,7 +15,7 @@ type RecoveryIndexView = ReturnType<typeof listRecoveryStatus> & { warnings: str
 type Success = Complete | Recovered;
 type Result = Success | { phase: 'NOT_RESET'; note: string; forkId?: string };
 type AgentPresetRow = { id: string; name?: string; description?: string; isDefault: boolean; broken?: string };
-type DryRun = { topicModel?: { selection: SessionModelSelection; source: 'session' | 'default' }; agentPreset?: string | null; sessionId: string; totalTurns: number | null; totalEvents: number; messages: number; size: number; k: number; oversized?: boolean; canReset?: boolean; blockedReason?: string };
+type DryRun = { topicModel?: { selection: SessionModelSelection; source: 'session' | 'default' }; agentPreset?: string | null; sessionId: string; totalTurns: number | null; totalEvents: number; messages: number; size: number; k: number; oversized?: boolean; a2aRoster?: { joined: true; hostA2aUnfixed: boolean | null; warning: string }; canReset?: boolean; blockedReason?: string };
 type DialogTarget = { sessionId: string; displayTitle?: string; completed?: Success; recoveryOnly?: true };
 type OverlayTarget = DialogTarget | { kind: 'recoveries' };
 type DialogProps = DialogTarget & { onClose: () => void };
@@ -348,6 +348,7 @@ window.__ModuleLoader__.load({
           dry && h('div', { 'data-inplace-reset-stats': true, style: { margin: '16px 0' } },
             h('div', null, `原日志轮次：${typeof dry.totalTurns === 'number' ? dry.totalTurns.toLocaleString() : dry.oversized ? '超大日志，未全量统计' : '未提供'}`),
             h('div', null, `事件数：${dry.totalEvents.toLocaleString()}${dry.oversized ? '（超大日志：只读尾部窗口，完整原件由隔离区保全）' : ''}`),
+            dry.a2aRoster && h('div', { 'data-inplace-reset-a2a-risk': String(dry.a2aRoster.hostA2aUnfixed) }, dry.a2aRoster.warning),
             h('div', null, `消息数：${dry.messages.toLocaleString()}`),
             h('div', null, `交接包大小：${((selectedModel?.size ?? dry.size) / 1024).toFixed(1)} KB`),
             h('div', null, selectedModel ? `已选模型候选 ${selectedModel.selected.length} 个片段；新日志收敛为 1 轮交接记录` : `交接包最多采样 ${dry.k} 轮；新日志收敛为 1 轮交接记录`),

@@ -1,7 +1,7 @@
 // 自检：合成最小会话，跑修复工具的 check/fix 全链（不依赖 DSH_FORMAT_LIB）。
 // 运行：npm test（或 node test/smoke.mjs）。全部断言过 → SMOKE-PASS。
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
@@ -9,6 +9,7 @@ import { openSession, writeSession, replaySurface } from '../lib/v4-file.mjs';
 
 const BIN = join(import.meta.dirname, '..', 'bin');
 const run = (tool, ...args) => execFileSync('node', [join(BIN, tool), ...args], { encoding: 'utf8' });
+const runLedgered = (env, tool, ...args) => execFileSync('node', [join(BIN, tool), ...args], { encoding: 'utf8', env: { ...process.env, DSH_REPAIR_LEDGER: env } });
 const hdr = { type: 'session', version: 4, sessionId: 'smoke', workspace: '/tmp/x' };
 let seq = -1;
 const ev = (type, data, extra = {}) => ({ type, seq: ++seq, time: 1700000000000, ...extra, ...(data === undefined ? {} : { data }) });
@@ -136,5 +137,28 @@ const dir = mkdtempSync(join(tmpdir(), 'dshsr-'));
   assert.equal(rc3, 1, 'unknown error must exit 1');
 }
 
+// ── 用例 6：修理动作自动记入台账（check 不记、fix 记、失败不影响修复）──
+{
+  const ledger = join(dir, 'ledger.jsonl');
+  seq = -1;
+  const rows = [hdr,
+    ev('turn/start', { turn: 1 }), ev('turn/end', { turn: 1, reason: { kind: 'completed' } }),
+    ev('turn/start', { turn: 1 }), ev('turn/end', { turn: 1, reason: { kind: 'completed' } }),
+  ];
+  const f = join(dir, 'led.zstd');
+  writeSession(f, rows);
+  let rc = 0;
+  try { runLedgered(ledger, 'fix-turn-rewind.mjs', 'check', f); } catch (e) { rc = e.status; }
+  assert.equal(rc, 2, 'check must flag the rewind');
+  assert.equal(existsSync(ledger), false, 'check 不落台账');
+  runLedgered(ledger, 'fix-turn-rewind.mjs', 'fix', f, '-o', join(dir, 'led.fixed.zstd'));
+  assert.equal(existsSync(ledger), true);
+  const entry = JSON.parse(readFileSync(ledger, 'utf8').trim());
+  assert.equal(entry.tool, 'fix-turn-rewind');
+  assert.equal(entry.input, f);
+  assert.match(entry.summary, /rewind 1 point/);
+  assert.equal(typeof entry.bytes, 'number');
+}
+
 rmSync(dir, { recursive: true, force: true });
-console.log('SMOKE-PASS (5 cases)');
+console.log('SMOKE-PASS (6 cases)');

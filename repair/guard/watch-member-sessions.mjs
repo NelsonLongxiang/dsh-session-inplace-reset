@@ -8,6 +8,7 @@
 // 环境：A2A_STATE_URL（默认本机 13080）、SESSIONS_ROOT（默认 ~/.dsh/sessions）、SESSION_GUARD_LOG。
 import { execFileSync } from 'node:child_process';
 import { readdirSync, renameSync, copyFileSync, existsSync, appendFileSync } from 'node:fs';
+import { recordLedger } from '../lib/ledger.mjs';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
@@ -98,6 +99,7 @@ for (const ws of readdirSync(SESSIONS_ROOT)) {
       const bak = `${f}.guard-${Date.now()}`;
       copyFileSync(f, bak);
       renameSync(out, f);
+      recordLedger({ tool: 'guard:swap', input: f, output: f, backup: bak, summary: `${mode} in-place（备份 ${bak.split(/[\\/]/).pop()}）` });
       if (st.badSystem || st.fieldBad || st.seqBad) { repaired++; log(`${id8} 自动修复（badSystem=${st.badSystem} fieldBad=${st.fieldBad} seqBad=${st.seqBad}）；备份 ${bak.split(/[\\/]/).pop()}`); }
       else { headed++; log(`${id8} 补头升级（CLEAN 无 protectedHead → 免疫）；备份 ${bak.split(/[\\/]/).pop()}`); }
     } catch (e) {

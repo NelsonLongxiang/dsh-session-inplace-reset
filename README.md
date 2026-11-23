@@ -8,7 +8,7 @@
 
 ## 会话日志修复工具链（repair/）
 
-除重置外，本仓带一套 v4 会话结构修复工具（`repair/`，零依赖）：`oracle`＋`preflight-v4` 双门槛校验、turn 回退／区间对／compaction 跨度修复、`prune-events` 事件摘除重排、冷会话守卫。用法与病征速查见 [repair/README.md](repair/README.md)。
+除重置外，本仓带一套 v4 会话结构修复工具（`repair/`，零依赖）：`oracle`＋`preflight-v4` 双门槛校验、turn 回退／区间对／compaction 跨度修复、`prune-events` 事件摘除重排、冷会话守卫。用法与病征速查见 [repair/README.md](repair/README.md)。`repair/` 是**独立嵌套包**（自带 `package.json`，不属于本仓 workspaces——本仓没有 workspaces，根 `npm test` 不含它）；根仓一键回归用 `npm run test:repair`，修理动作自动记入修复台账（`~/.dsh/session-repair/ledger.jsonl`）。
 
 ## 使用
 

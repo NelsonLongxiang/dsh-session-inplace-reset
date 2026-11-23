@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { openSession, writeSession, SURFACE_TYPES } from '../lib/v4-file.mjs';
+import { recordLedger } from '../lib/ledger.mjs';
 
 const usage = `repair-v4-session.mjs — DSH 会话日志修复（v9 方法）
 
@@ -196,6 +197,7 @@ if (cmd === 'ensure-head') {
   const outIdx = rest.indexOf('-o');
   const outFile = outIdx >= 0 ? rest[outIdx + 1] : file.replace(/\.zstd$/, '.headed.zstd');
   writeSession(outFile, evs);
+  recordLedger({ tool: 'repair-v4-session:ensure-head', input: file, output: outFile, summary: `行数 ${before}→${evs.length}` });
   console.log(`ensure-head done: ${outFile}（行数 ${before}→${evs.length}）`);
   process.exit(0);
 }
@@ -241,6 +243,7 @@ if (cmd === 'fix') {
   if (ensureStepWindow(evs)) stats.stepWindowInserted = 1;
   if (renumberSeqs(evs)) stats.seqRenumbered = 1;
   writeSession(outFile, evs);
+  recordLedger({ tool: 'repair-v4-session:fix', input: file, output: outFile, summary: `行数 ${lines.length}→${evs.length} | turn ${stats.turnFixed} | sys→user ${stats.sysToUser} | head ${stats.headInserted ?? 0} | seq ${stats.seqRenumbered ?? 0}` });
   fs.writeFileSync(outFile + '.fixed.jsonl', evs.map((e) => JSON.stringify(e)).join('\n') + '\n');
   console.log(`fix done: ${outFile}`);
   console.log(`  行数 ${lines.length} | turn 修正 ${stats.turnFixed} 行 | system→user 转换 ${stats.sysToUser} 行`);
