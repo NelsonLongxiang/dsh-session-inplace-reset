@@ -8,6 +8,7 @@ var __rewriteRelativeImportExtension = (this && this.__rewriteRelativeImportExte
 };
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createModelPreviews } from "./model-previews.js";
 import { createTopicPreviews } from "./topic-previews.js";
@@ -86,6 +87,18 @@ export function buildHandoff(events, opts = {}) {
 }
 export async function apply(ctx, config) {
     const home = process.env.DSH_HOME ?? join(homedir(), '.dsh');
+    // 已装 a2a 的 lib 位置：优先本 profile 的 node_modules，再退回 require 解析。
+    const a2aLibPath = () => {
+        const profileLib = join(home, 'profiles', ctx.profileContext?.name ?? 'default', 'node_modules', '@nelsonlongxiang', 'dsh-open-a2a-net', 'lib', 'index.js');
+        if (existsSync(profileLib))
+            return profileLib;
+        try {
+            return hostRequire.resolve('@nelsonlongxiang/dsh-open-a2a-net/lib/index.js');
+        }
+        catch {
+            return undefined;
+        }
+    };
     const ledger = new Ledger(home);
     const lifecycle = createSessionLifecycle(ctx, symbols);
     let modelPreviews;
@@ -128,12 +141,7 @@ export async function apply(ctx, config) {
                 const handoff = buildHandoff(snapshot.tail, { ...config, k: config.defaultK });
                 const pending = recoveryStatus(home, sessionId);
                 const eligibility = pending.operations.length || pending.issues.length ? { canReset: false, blockedReason: '存在未完成或不可校验的事务，请先核对恢复记录' } : lifecycle.inspect(sessionId);
-                return { ok: true, sessionId, totalEvents: snapshot.totalEvents, totalTurns: null, oversized: true, sizeBytes: snapshot.sizeBytes, agentPreset: snapshot.values.agentPreset ?? null, a2aRoster: a2aRosterRisk(home, sessionId, () => { try {
-                        return hostRequire.resolve('@nelsonlongxiang/dsh-open-a2a-net/lib/index.js');
-                    }
-                    catch {
-                        return undefined;
-                    } }), ...eligibility, size: Buffer.byteLength(JSON.stringify(handoff)), k: handoff.k, messages: handoff.recent_messages.length };
+                return { ok: true, sessionId, totalEvents: snapshot.totalEvents, totalTurns: null, oversized: true, sizeBytes: snapshot.sizeBytes, agentPreset: snapshot.values.agentPreset ?? null, a2aRoster: a2aRosterRisk(home, sessionId, a2aLibPath), ...eligibility, size: Buffer.byteLength(JSON.stringify(handoff)), k: handoff.k, messages: handoff.recent_messages.length };
             }
             const observation = await ctx.sessionQuery.observeSession(sessionId);
             try {
@@ -145,12 +153,7 @@ export async function apply(ctx, config) {
                     topicModel = sessionModel(observation, ctx.get('agentDefaultModel'));
                 }
                 catch { /* Model analysis availability does not block ordinary reset previews. */ }
-                return { ok: true, sessionId, ...sessionMetrics(observation.events), topicModel, agentPreset: observedAgentPreset(observation) ?? null, a2aRoster: a2aRosterRisk(home, sessionId, () => { try {
-                        return hostRequire.resolve('@nelsonlongxiang/dsh-open-a2a-net/lib/index.js');
-                    }
-                    catch {
-                        return undefined;
-                    } }), ...eligibility, size: Buffer.byteLength(JSON.stringify(handoff)), k: handoff.k, messages: handoff.recent_messages.length };
+                return { ok: true, sessionId, ...sessionMetrics(observation.events), topicModel, agentPreset: observedAgentPreset(observation) ?? null, a2aRoster: a2aRosterRisk(home, sessionId, a2aLibPath), ...eligibility, size: Buffer.byteLength(JSON.stringify(handoff)), k: handoff.k, messages: handoff.recent_messages.length };
             }
             finally {
                 observation[Symbol.dispose]?.();
