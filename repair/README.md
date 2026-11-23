@@ -1,8 +1,8 @@
-# dsh-session-repair — DSH v4 会话日志修复工具链
+# repair/ — DSH v4 会话日志修复工具链
 
-修复 DeepSeek Harness（DSH）v4 会话日志（`session.v4.jsonl.zstd`）的结构损坏。全部工具零依赖（Node ≥22.15 标准库自带 zstd），校验器直接 import 宿主同源的官方格式库，升级 dsh 后自动跟随新规则。
+修复 DSH v4 会话日志（`session.v4.jsonl.zstd`）的结构损坏；与重置插件互补——重置是核选项，这里是外科修复。全部工具零依赖（Node ≥22.15 标准库自带 zstd），校验器直接 import 宿主同源的官方格式库，升级 dsh 后自动跟随新规则。
 
-来源：2026-11-14 ~ 11-22 修复战役（fix-P 三轮迭代＋全舰队 8 件损坏会话＋220b6caf 七层洋葱＋446ce672 重置后返修）沉淀。前身目录：`~/.ygl-trees/preset-verify/session-repair/`（含语料，零删除保留）。
+来源：2026-11-14 ~ 11-22 修复战役（fix-P 三轮迭代＋全舰队 8 件损坏会话＋220b6caf 七层洋葱＋446ce672 重置后返修）沉淀；2026-11-22 自独立仓 `dsh-session-repair`（`11dab07`，树 `fcbabb2d`）并入本仓。前身语料档案：`~/.ygl-trees/preset-verify/session-repair/`（零删除保留）。
 
 ## 快速开始
 
@@ -10,9 +10,9 @@
 # oracle / preflight / fix-compaction-span 需要宿主格式库目录（一次定位，处处设置）：
 DSH_FORMAT_LIB="$(node -e "const p=require('path'),d=require('path').dirname(require.resolve('@deepseek-ai/dsh/package.json'));console.log(p.join(d,'node_modules','@deepseek-ai'))")"
 export DSH_FORMAT_LIB
-node bin/oracle.mjs <session.v4.jsonl.zstd>        # 结构层校验
-node bin/preflight-v4.mjs <session.v4.jsonl.zstd>  # 持久层预检（装载同源逐行）
-npm test                                           # 合成件自检（不需要 DSH_FORMAT_LIB）
+node repair/bin/oracle.mjs <session.v4.jsonl.zstd>        # 结构层校验
+node repair/bin/preflight-v4.mjs <session.v4.jsonl.zstd>  # 持久层预检（装载同源逐行）
+node repair/test/smoke.mjs                               # 合成件自检（不需要 DSH_FORMAT_LIB）
 ```
 
 ## 工具
