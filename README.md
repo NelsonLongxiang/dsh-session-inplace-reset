@@ -4,7 +4,7 @@
 
 正式仓库：[NelsonLongxiang/dsh-session-inplace-reset](https://github.com/NelsonLongxiang/dsh-session-inplace-reset)。
 
-当前版本 **0.13.2**（超大会话全链路无全量物化：dryRun/预检/备份不再 observeSession 巨史，避免与宿主 fork 并存把堆打爆；0.13.1 引入尾部快照备份），已验证宿主为 **DSH 0.2.1-rc.2 / Cordis 4.0.5 / Node 24**。单会话释放使用有边界的宿主适配；不匹配的运行时形状会拒绝操作。
+当前版本 **0.13.6**（已提交的重置末尾释放重建的运行时：交接轮直接写入日志，运行时内存轮计数未跟随，若不释放而继续接活会重开 turn 1 与交接轮撞号——2026-11-22 实证，已在 `[reset-test]` 副本上验证；此前 0.13.5 封死 #756 族守卫同步 throw 击穿定时器，0.13.2 起超大会话全链路无全量物化），已验证宿主为 **DSH 0.2.1-rc.2 / Cordis 4.0.5 / Node 24**。单会话释放使用有边界的宿主适配；不匹配的运行时形状会拒绝操作。
 
 ## 会话日志修复工具链（repair/）
 
