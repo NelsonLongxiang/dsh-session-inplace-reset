@@ -1,0 +1,15 @@
+{
+  "name": "dsh-session-repair",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH v4 会话日志修复工具链：结构校验（oracle）、持久层预检（preflight）、turn 回退/区间对/compaction 跨度/事件摘除修复、冷会话守卫",
+  "engines": {
+    "node": ">=22.15"
+  },
+  "scripts": {
+    "test": "node test/smoke.mjs",
+    "oracle": "node bin/oracle.mjs",
+    "preflight": "node bin/preflight-v4.mjs"
+  }
+}

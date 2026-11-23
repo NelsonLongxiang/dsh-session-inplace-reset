@@ -1,0 +1,8 @@
+# 会话语料与中间件不入库（隐私＋体积）；语料留存于 preset-verify/session-repair/corpus/
+corpus/
+*.zstd
+*.jsonl
+*.log
+node_modules/
+.bak-*
+tmp/
