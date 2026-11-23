@@ -1,7 +1,7 @@
 // 自检：合成最小会话，跑修复工具的 check/fix 全链（不依赖 DSH_FORMAT_LIB）。
 // 运行：npm test（或 node test/smoke.mjs）。全部断言过 → SMOKE-PASS。
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
@@ -104,5 +104,37 @@ const dir = mkdtempSync(join(tmpdir(), 'dshsr-'));
   assert.deepEqual(r.surface, [3, 2, 4], 'replace splices in place');
 }
 
+// ── 用例 5：sweep 全量分诊＋triage 红字分诊 ──
+{
+  const root = join(dir, 'root');
+  const wsA = join(root, 'ws-a', 'session-aaaaaaaa-0000-0000-0000-000000000000');
+  const wsB = join(root, 'ws-b', 'session-bbbbbbbb-0000-0000-0000-000000000000');
+  mkdirSync(wsA, { recursive: true });
+  mkdirSync(wsB, { recursive: true });
+  seq = -1;
+  writeSession(join(wsA, 'session.v4.jsonl.zstd'), [hdr,
+    ev('turn/start', { turn: 1 }), ev('turn/end', { turn: 1, reason: { kind: 'completed' } }),
+  ]);
+  seq = -1;
+  writeSession(join(wsB, 'session.v4.jsonl.zstd'), [hdr,
+    ev('turn/start', { turn: 1 }), ev('turn/end', { turn: 1, reason: { kind: 'completed' } }),
+    ev('turn/start', { turn: 1 }), ev('turn/end', { turn: 1, reason: { kind: 'completed' } }),
+  ]);
+  let rc = 0, out = '';
+  try { run('sweep.mjs', '--root', root); } catch (e) { rc = e.status; out = (e.stdout || '') + (e.stderr || ''); }
+  assert.equal(rc, 2, 'sweep must exit 2 when a session is sick');
+  assert.match(out, /aaaaaaaa\s+HEALTHY/);
+  assert.match(out, /bbbbbbbb\s+SICK\s+turn-rewind/);
+  assert.match(out, /有病 1/);
+  const t1 = run('triage.mjs', 'is corrupt: SessionFormatError: turn/start does not open the expected turn');
+  assert.match(t1, /判定：turn 回退/);
+  assert.match(t1, /fix-turn-rewind/);
+  const t2 = run('triage.mjs', 'image/offload: image index 0 does not exist');
+  assert.match(t2, /prune-events/);
+  let rc3 = 0;
+  try { run('triage.mjs', 'something totally unknown'); } catch (e) { rc3 = e.status; }
+  assert.equal(rc3, 1, 'unknown error must exit 1');
+}
+
 rmSync(dir, { recursive: true, force: true });
-console.log('SMOKE-PASS (4 cases)');
+console.log('SMOKE-PASS (5 cases)');

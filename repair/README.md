@@ -26,6 +26,8 @@ node repair/test/smoke.mjs                               # 合成件自检（不
 | `bin/fix-compaction-span.mjs` | compaction `shadowedSeqs` 按面重放重算（二分迭代至全绿） |
 | `bin/prune-events.mjs` | 删指定 seq 事件＋全量重排＋引用平移（含 `targets[].seq` / `shadowedRange`）；引用恰指被删 seq 即拒修 |
 | `bin/repair-v4-session.mjs` | 主管线（v9）：fold 语义 turn 重编＋system 拉平＋补合法三明治头＋seq 安全网；`check`/`fix`/`ensure-head`/`frames` |
+| `bin/sweep.mjs` | 全量分诊：扫一个主机的全部 v4 会话（快检轮机＋区间对，`--gates` 加 oracle＋preflight 慢门），逐件报 HEALTHY/NOTE/SICK＋病种＋对应工具；`--json` 机读 |
+| `bin/triage.mjs` | 红字分诊：贴装载/校验错误原文→病种判定＋修法命令＋验证提醒（与病征速查同源） |
 | `guard/watch-member-sessions.mjs` | 冷会话守卫 v3（.223 计划任务每 15 分钟）：fold 体检＋CLEAN 无头自动补头；只碰冷会话，备份 `.guard-<epoch>` |
 | `lib/v4-file.mjs` | 共享件：zstd 多帧遍历、逐行解析、逐行一帧写回、surface 重放 |
 
