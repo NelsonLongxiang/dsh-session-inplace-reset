@@ -95,7 +95,14 @@ export async function executeReset(ctx: HostContext, ledger: OperationLedger, li
       const result = { ok: true, phase: 'DONE', verified: true, sameId: true, sessionId, operationId, forkId: backup.forkId, ...(backup.trimmedToSeq !== undefined ? { backupTrimmedToSeq: backup.trimmedToSeq } : {}), quarantine: journal.quarantine, before, after, handoffMode: cfg.modelReportId ? 'model' : 'recent', ...(cfg.modelReportId ? { modelReportId: cfg.modelReportId, modelSourceHash: cfg.modelSourceHash } : {}) };
       journal.record('committed', result);
       const auditWarning = history(ledger, { operationId, sessionId, step: 'VERIFY', state: 'DONE', result });
-      return { ...result, ...(auditWarning ? { auditWarning } : {}) };
+      // 提交后必须释放重建的运行时：交接轮是直接 append 进日志的，运行时内存的轮计数并未跟随，
+      // 若它继续接活会重开 turn 1，与已闭合的交接轮撞号（2026-11-22 446ce672 接缝回退实证）。
+      // 释放后下次物化从日志冷读，轮号自然衔接。
+      let releaseWarning: string | undefined;
+      try { await lifecycle.releaseCurrent(sessionId); }
+      catch (error) { releaseWarning = `新会话运行时未释放（${message(error)}）；请重新打开会话后再续写，否则轮号可能回退`; }
+      history(ledger, { operationId, sessionId, step: 'RELEASE_RUNTIME', state: releaseWarning ? 'WARN' : 'DONE', ...(releaseWarning ? { error: releaseWarning } : {}) });
+      return { ...result, ...(auditWarning ? { auditWarning } : {}), ...(releaseWarning ? { releaseWarning } : {}) };
     } catch (error) {
       if (journal) {
         try {

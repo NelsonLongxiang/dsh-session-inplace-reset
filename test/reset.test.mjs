@@ -84,7 +84,7 @@ function fixture({ failCreate = false, activity = [], wrongPreset = false, bigMe
   const rows = [];
   const ledger = { append(record) { const row = { at: rows.length + 1, ...record }; rows.push(row); return row; } };
   const run = (options = {}, request = {}) => executeReset(ctx, ledger, lifecycle, home, { sessionId: id, confirmShortId: id.slice(8, 16), ...request }, { defaultK: 12, handoffHardCapKB: 512, buildHandoff: () => ({ k: 12, recent_messages: [{ role: 'user', text: 'task history' }] }), ...options });
-  return { home, file, id, run, bytes, rows, ctx, ledger, lifecycle, services, released: () => released, forkCalls: () => forkCalls, forkRequests, observeCalls: () => observeCalls, observeCallsAtFork: () => observeCallsAtFork };
+  return { home, file, id, run, bytes, rows, agents, ctx, ledger, lifecycle, services, released: () => released, forkCalls: () => forkCalls, forkRequests, observeCalls: () => observeCalls, observeCallsAtFork: () => observeCallsAtFork };
 }
 
 test('reset completes only after a new one-turn handoff is durably read back', async () => {
@@ -100,6 +100,9 @@ test('reset completes only after a new one-turn handoff is durably read back', a
   assert.ok(existsSync(join(value.quarantine, 'original', 'sessions', 'bucket', f.id, 'session.json')));
   assert.deepEqual(readFileSync(join(value.quarantine, 'original', 'sessions', 'bucket', f.id, 'session.json')), f.bytes);
   assert.equal(f.rows.at(-1).state, 'DONE');
+  assert.equal(value.releaseWarning, undefined, 'runtime release must succeed on the happy path');
+  assert.equal(f.agents.has(f.id), false, 'committed reset must release the rebuilt runtime so the next materialization cold-reads the log (seam turn-rewind fix)');
+  assert.ok(f.rows.some((row) => row.step === 'RELEASE_RUNTIME' && row.state === 'DONE'));
 });
 
 test('the protected system head and handoff share one open turn with a closed step', async () => {
