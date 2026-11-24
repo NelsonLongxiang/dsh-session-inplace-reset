@@ -61,7 +61,7 @@ node repair/test/smoke.mjs                               # 合成件自检（不
 
 - **双门槛缺一不可**：`oracle` PASS ＋ `preflight` PASS 才算结构完好；换入后 md5 回拉核对。
 - 换入前**必备份原件**（`.bak-<层>-<日期>` 后缀，会话目录内）。
-- 换入窗口选**会话闲置期**（观察文件 mtime/size 静止 ≥ 数分钟；宿主内存中若有活运行时会带旧计数器续写，再撞接缝）。
+- 换入窗口选**会话冷态**：`session/list` 里该会话 `agentAvailable:false`（不只是 mtime 静止，也不只是 `canReset`——canReset 允许“活而空闲”的运行时）。宿主内存里只要还有活运行时，就会带旧计数器续写，在新接缝再撞一次（2026-11-24 本机 446ce672 实证：首修只验 canReset，旧运行时在 seq 707 重开 turn 10，再坏一轮）。活会话先关闭再换件。
 - 平移历史教训：**先推编号代数再动手**（存储值 = 原值±历史平移的叠加；逐层核对，不盲猜方向）。
 - 修复顺序建议：区间对 → seq 跳号 → step 跳号 → 前向引用 → compaction 跨度 → offload（由结构层到投影层）。
 
@@ -74,4 +74,4 @@ node repair/test/smoke.mjs                               # 合成件自检（不
 - core「撤回（withdraw）」写坏事件编号 → 全族 turn 回退/跳号/跨度错（标本 `Withdrawn seq N and everything after it`）。
 - a2a `materialize()` 同步抛未捕获 × sir 守卫 → 宿主崩溃：[issue #756](https://github.com/NelsonLongxiang/dsh-open-a2a-net/issues/756)，修法 [PR #740](https://github.com/NelsonLongxiang/dsh-open-a2a-net/pull/740)。
 - sir 0.13.1 复位种子 turn 计数不衔接（重置后运行时从 turn 1 重开）。
-- 老版本 seq-range 编码漏进 v4 → 区间对族。
+- 老版本 seq-range 编码漏进 v4 → 区间对族。**写入方已定位（2026-11-24）**：v4 current encoder（`dsh-session-format-v3-to-v4` 的 `releasedV4SessionFormatCodec.encodeEvent`）直接委托 v2 codec，后者对 ≥3 连号的 `sourceEventSeqs` 做 `encodeSeqRanges`；读路分裂——持久层扫描器做 range decoding（preflight PASS），v4 关系校验器不做（oracle REL-FAIL）。触发面：dsh-rewind 的撤回标记事件（`source.kind:"dsh-rewind"`）。修法在 harness core：v4 encoder 写扁平整数，或校验前先 `decodeSeqRanges`。
